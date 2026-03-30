@@ -68,7 +68,7 @@ const POLICY_LINKS = {
 
 export default function PolicyCenter() {
   const { loading, acceptPolicies } = usePolicyAcceptance();
-  const [checked, setChecked] = useState({});
+  const [acceptedAll, setAcceptedAll] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const requiredItems = useMemo(
@@ -87,13 +87,8 @@ export default function PolicyCenter() {
     []
   );
 
-  const allChecked = useMemo(
-    () => requiredItems.every((item) => checked[item.key]),
-    [checked, requiredItems]
-  );
-
   const onAcceptAll = async () => {
-    if (!allChecked) return;
+    if (!acceptedAll) return;
     setSaving(true);
     try {
       await acceptPolicies(REQUIRED_POLICIES);
@@ -136,38 +131,42 @@ export default function PolicyCenter() {
             <div>
               <h2 className="text-base font-semibold">Required policies</h2>
               <p className="text-sm text-gray-500">
-                You must review and accept these policies before continuing.
+                Please review these policies before continuing.
               </p>
             </div>
 
             {requiredItems.map((item) => (
               <div
                 key={item.key}
-                className="flex items-start justify-between gap-4 rounded-2xl border p-4"
+                className="rounded-2xl border p-4"
               >
-                <div className="min-w-0">
-                  <Link
-                    to={item.href}
-                    className="inline-flex items-center gap-1 font-semibold text-green-700 hover:underline"
-                  >
-                    {item.label}
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
+                <Link
+                  to={item.href}
+                  className="inline-flex items-center gap-1 font-semibold text-green-700 hover:underline"
+                >
+                  {item.label}
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
 
-                  <p className="mt-1 text-sm text-gray-600">{item.description}</p>
-                  <p className="mt-2 text-xs text-gray-500">
-                    I have reviewed and agree to this policy.
-                  </p>
-                </div>
-
-                <Checkbox
-                  checked={!!checked[item.key]}
-                  onCheckedChange={(value) =>
-                    setChecked((prev) => ({ ...prev, [item.key]: !!value }))
-                  }
-                />
+                <p className="mt-1 text-sm text-gray-600">{item.description}</p>
               </div>
             ))}
+          </div>
+
+          <div className="rounded-2xl border p-4">
+            <div className="flex items-start gap-3">
+              <Checkbox
+                id="accept-all-policies"
+                checked={acceptedAll}
+                onCheckedChange={(value) => setAcceptedAll(!!value)}
+              />
+              <label
+                htmlFor="accept-all-policies"
+                className="text-sm text-gray-700 leading-6 cursor-pointer"
+              >
+                I accept all terms and conditions.
+              </label>
+            </div>
           </div>
 
           {optionalItems.length > 0 && (
@@ -196,10 +195,10 @@ export default function PolicyCenter() {
 
           <Button
             className="w-full"
-            disabled={loading || saving || !allChecked}
+            disabled={loading || saving || !acceptedAll}
             onClick={onAcceptAll}
           >
-            {saving ? "Saving acceptance..." : "Accept required policies"}
+            {saving ? "Saving acceptance..." : "Accept all terms and conditions"}
           </Button>
         </CardContent>
       </Card>

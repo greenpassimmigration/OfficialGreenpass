@@ -1,9 +1,5 @@
 // src/pages/Events.jsx
-import React, { useEffect, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Calendar, MapPin, ArrowRight } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Link, useSearchParams } from "react-router-dom";
 import { createPageUrl } from "@/components/URLRedirect";
@@ -35,7 +31,7 @@ const toJsDate = (v) => {
     return isNaN(d.getTime()) ? null : d;
   }
 
-  // Numeric strings
+  // Strings
   if (typeof v === "string") {
     const raw = v.trim();
     if (!raw) return null;
@@ -46,7 +42,7 @@ const toJsDate = (v) => {
       return isNaN(d.getTime()) ? null : d;
     }
 
-    // Handle: "January 27, 2026 at 7:00:00 PM UTC+8"
+    // Handle strings like: "January 27, 2026 at 7:00:00 PM UTC+8"
     const cleaned = raw
       .replace(" at ", " ")
       .replace(/UTC\+(\d{1,2})\b/g, "+$1:00")
@@ -75,8 +71,74 @@ const safeFormat = (v, fmtStr = "MMMM dd, yyyy", fallback = "—") => {
   }
 };
 
-/* ---------- Small components ---------- */
-const EventCard = ({ event, tr }) => {
+const safeTime = (v, fallback = "—") => {
+  const d = toJsDate(v);
+  if (!d) return fallback;
+  try {
+    return format(d, "hh:mm a");
+  } catch {
+    try {
+      return d.toLocaleTimeString();
+    } catch {
+      return fallback;
+    }
+  }
+};
+
+const normalizeCountry = (value = "") => String(value || "").trim().toLowerCase();
+
+const getCountryFromEvent = (event) => {
+  return (
+    event.country ||
+    event.country_name ||
+    event.countryName ||
+    event.selected_country ||
+    event.selectedCountry ||
+    event.location_country ||
+    event.locationCountry ||
+    ""
+  );
+};
+
+const getLocationText = (event) => {
+  if (event.location && String(event.location).trim()) return String(event.location).trim();
+
+  const city = event.city || event.location_city || event.locationCity || "";
+  const province =
+    event.province ||
+    event.state ||
+    event.region ||
+    event.location_province ||
+    event.locationProvince ||
+    "";
+  const country = getCountryFromEvent(event);
+
+  return [city, province, country].filter(Boolean).join(", ") || "—";
+};
+
+const getShortDescription = (event) => {
+  const raw =
+    event.short_description ||
+    event.shortDescription ||
+    event.summary ||
+    event.description ||
+    "";
+  return String(raw || "").replace(/<[^>]*>/g, "").trim();
+};
+
+const getRegisterUrl = (event) => {
+  return (
+    event.registration_url ||
+    event.registrationUrl ||
+    event.register_url ||
+    event.registerUrl ||
+    event.external_url ||
+    event.externalUrl ||
+    ""
+  );
+};
+
+const isBoostedNow = (event) => {
   const now = new Date();
   const until = event?.boosted_until;
 
@@ -87,83 +149,170 @@ const EventCard = ({ event, tr }) => {
       ? new Date(until.seconds * 1000)
       : toJsDate(until);
 
-  const boosted = !!(untilDate && untilDate > now);
+  return !!(untilDate && untilDate > now);
+};
+
+/* ---------- Small Components ---------- */
+const FilterBox = ({
+  countries,
+  selectedCountry,
+  setSelectedCountry,
+  activeTab,
+  setActiveTab,
+  onReset,
+  tr,
+}) => {
+  return (
+    <div className="bg-[#eef4f7] border border-[#d8e3ea] p-5 md:p-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-end">
+        <div className="lg:col-span-4">
+          <label className="block text-sm font-semibold text-gray-700 mb-2">
+            {tr("location", "Location")}:
+          </label>
+          <select
+            value={selectedCountry}
+            onChange={(e) => setSelectedCountry(e.target.value)}
+            className="w-full h-11 px-4 border border-gray-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#1d78b5]"
+          >
+            <option value="">{tr("select_country", "Select a Country")}</option>
+            {countries.map((country) => (
+              <option key={country} value={country}>
+                {country}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="lg:col-span-3">
+          <label className="block text-sm font-semibold text-gray-700 mb-2">
+            {tr("view", "View")}:
+          </label>
+          <select
+            value={activeTab}
+            onChange={(e) => setActiveTab(e.target.value)}
+            className="w-full h-11 px-4 border border-gray-300 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#1d78b5]"
+          >
+            <option value="upcoming">{tr("upcoming", "Upcoming Events")}</option>
+            <option value="past">{tr("past", "Past Events")}</option>
+          </select>
+        </div>
+
+        <div className="lg:col-span-5 flex flex-col sm:flex-row gap-3">
+          <button
+            type="button"
+            className="h-11 px-6 bg-[#1d78b5] text-white font-semibold hover:bg-[#17679b] transition-colors"
+          >
+            {tr("filter", "Filter")}
+          </button>
+          <button
+            type="button"
+            onClick={onReset}
+            className="h-11 px-6 bg-[#1d78b5] text-white font-semibold hover:bg-[#17679b] transition-colors"
+          >
+            {tr("reset", "Reset")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const EventRow = ({ event, tr }) => {
+  const title = event.title || tr("untitled_event", "Untitled Event");
+  const locationText = getLocationText(event);
+  const description = getShortDescription(event);
+  const detailsLink = createPageUrl("EventDetails", `id=${event.id || event.event_id}`);
+  const registerUrl = getRegisterUrl(event);
+
+  const startDate = safeFormat(event.start, "MMMM dd, yyyy");
+  const startTime = safeTime(event.start, "");
+  const endTime = safeTime(event.end, "");
 
   return (
-    <Card className="hover:shadow-lg transition-shadow duration-300 flex flex-col group">
-      <div className="overflow-hidden rounded-t-lg h-48">
-        <img
-          src={
-            event.cover_image ||
-            "https://images.unsplash.com/photo-1523580494863-6f3031224c94?auto=format&fit=crop&w=1170&q=80"
-          }
-          alt={event.title}
-          className="w-full h-full object-cover transform group-hover:scale-105 transition-transform duration-300"
-        />
-      </div>
+    <tr className="border-b border-gray-200 align-top">
+      <td className="px-4 py-5">
+        <div className="space-y-2">
+          <Link
+            to={detailsLink}
+            className="text-[#1f6ea5] font-bold text-[18px] leading-snug hover:underline"
+          >
+            {title}
+          </Link>
 
-      <CardContent className="p-6 flex flex-col flex-grow">
-        <h3 className="font-bold text-lg text-gray-900 mb-2 h-14 overflow-hidden">
-          {event.title}
-        </h3>
-
-        <div className="flex flex-wrap items-center gap-2 mb-2">
-          {event?.platform ? (
-            <Badge
-              className={
-                String(event.platform).toLowerCase().includes("event")
-                  ? "bg-orange-600 text-white"
-                  : "bg-emerald-600 text-white"
-              }
-            >
-              {String(event.platform).toLowerCase().includes("event")
-                ? tr("hosted_on_eventbrite", "Hosted on Eventbrite")
-                : tr("hosted_on_nasio", "Hosted on Nas.io")}
-            </Badge>
+          {description ? (
+            <p className="text-[15px] text-gray-600 leading-relaxed max-w-[95%] line-clamp-2">
+              {description}
+            </p>
           ) : null}
 
-          <Badge variant="secondary" className="border">
-            {String(event?.price_type || "free").toLowerCase() === "paid"
-              ? tr("paid", "Paid")
-              : tr("free", "Free")}
-          </Badge>
-
-          {boosted ? <Badge className="bg-emerald-700 text-white">{tr("boosted", "Boosted")}</Badge> : null}
-        </div>
-
-        <div className="flex items-center text-sm text-gray-500 mb-2">
-          <Calendar className="w-4 h-4 mr-2" />
-          {safeFormat(event.start, "MMMM dd, yyyy")}
-        </div>
-
-        <div className="flex items-center text-sm text-gray-500 mb-4">
-          <MapPin className="w-4 h-4 mr-2" />
-          {event.location || "—"}
-        </div>
-
-        <div className="mt-auto">
-          <Link to={createPageUrl("EventDetails", `id=${event.id || event.event_id}`)}>
-            <Button
-              variant="outline"
-              className="w-full group-hover:bg-green-600 group-hover:text-white transition-colors"
-            >
-              {tr("view_details", "View Details")} <ArrowRight className="w-4 h-4 ml-2" />
-            </Button>
+          <Link
+            to={detailsLink}
+            className="inline-block text-[#1f6ea5] font-semibold hover:underline"
+          >
+            {tr("click_for_more", "Click for more »")}
           </Link>
         </div>
-      </CardContent>
-    </Card>
+      </td>
+
+      <td className="px-4 py-5 text-[15px] text-gray-600 min-w-[180px]">
+        {locationText}
+      </td>
+
+      <td className="px-4 py-5 min-w-[180px]">
+        <div className="text-[15px] font-semibold text-gray-700">{startDate}</div>
+        <div className="text-[15px] text-gray-500 mt-1">
+          {startTime && endTime ? `${startTime} - ${endTime}` : startTime || "—"}
+        </div>
+      </td>
+
+      <td className="px-4 py-5 min-w-[130px]">
+        {registerUrl ? (
+          <a
+            href={registerUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center px-4 py-2 border border-gray-200 bg-[#f6f8fa] text-[#1f6ea5] font-semibold hover:bg-[#edf3f7] transition-colors"
+          >
+            {tr("register", "Register")}
+          </a>
+        ) : (
+          <span className="text-gray-500">{tr("na", "n/s")}</span>
+        )}
+      </td>
+    </tr>
+  );
+};
+
+const FeaturedEventCard = ({ event, tr }) => {
+  const detailsLink = createPageUrl("EventDetails", `id=${event.id || event.event_id}`);
+  const dateText = safeFormat(event.start, "MMMM dd, yyyy");
+  const locationText = getLocationText(event);
+
+  return (
+    <div className="pb-5 border-b border-gray-200 last:border-b-0 last:pb-0">
+      <Link
+        to={detailsLink}
+        className="text-[#1f6ea5] font-bold leading-snug hover:underline block"
+      >
+        {event.title || tr("untitled_event", "Untitled Event")}
+      </Link>
+
+      <div className="mt-2 text-gray-500 text-sm">
+        {locationText !== "—" ? <div>{locationText}</div> : null}
+        <div>{dateText}</div>
+      </div>
+    </div>
   );
 };
 
 const PageSkeleton = () => (
-  <div className="animate-pulse">
-    <div className="h-64 bg-gray-200" />
-    <div className="max-w-7xl mx-auto py-12 px-4">
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-        {[...Array(3)].map((_, i) => (
-          <div key={i} className="h-96 bg-gray-200 rounded-lg" />
-        ))}
+  <div className="min-h-screen bg-[#f5f7f9] animate-pulse">
+    <div className="h-56 bg-gray-300" />
+    <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="h-36 bg-gray-200 mb-6" />
+      <div className="grid lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-9 h-[500px] bg-gray-200" />
+        <div className="lg:col-span-3 h-[500px] bg-gray-200" />
       </div>
     </div>
   </div>
@@ -178,6 +327,8 @@ export default function EventsPage() {
   const [events, setEvents] = useState([]);
   const [pageContent, setPageContent] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedCountry, setSelectedCountry] = useState("");
+  const [activeTab, setActiveTab] = useState("upcoming");
 
   // Load events from Firestore
   const fetchEvents = async () => {
@@ -185,10 +336,14 @@ export default function EventsPage() {
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   };
 
-  // Load page header content from Firestore (singleton)
+  // Load page header content from Firestore
   const fetchHeaderContent = async () => {
     try {
-      const q = query(collection(db, "home_page_content"), where("singleton_key", "==", "SINGLETON"), limit(1));
+      const q = query(
+        collection(db, "home_page_content"),
+        where("singleton_key", "==", "SINGLETON"),
+        limit(1)
+      );
       const snap = await getDocs(q);
       if (snap.empty) return null;
       const data = snap.docs[0].data();
@@ -201,20 +356,17 @@ export default function EventsPage() {
   function pickLocalized(header, baseKey) {
     if (!header) return null;
 
-    // 1) i18n keys support
     const keyField = header[`${baseKey}_i18n_key`];
     if (keyField && typeof keyField === "string") {
       return tr(keyField, header[baseKey] || "");
     }
 
-    // 2) translations map support: { title_translations: { en: "...", es: "..." } }
     const map = header[`${baseKey}_translations`];
     if (map && typeof map === "object") {
       const v = map[lang] || map[lang.toLowerCase()] || map[lang.split("-")[0]];
       if (v) return v;
     }
 
-    // 3) suffixed fields: title_es, subtitle_fil, etc.
     const suffix = lang.replace("-", "_");
     const byLang =
       header[`${baseKey}_${lang}`] ||
@@ -222,7 +374,6 @@ export default function EventsPage() {
       header[`${baseKey}_${lang.split("-")[0]}`];
     if (byLang) return byLang;
 
-    // 4) default field
     return header[baseKey] || null;
   }
 
@@ -245,7 +396,7 @@ export default function EventsPage() {
           return !!(d && d > now);
         };
 
-        // sort: boosted (active) first, then sort_order, then start
+        // retain original sorting logic: boosted first, then sort_order, then start
         const sorted = [...evs].sort((a, b) => {
           const aBoost = isBoostActive(a);
           const bBoost = isBoostActive(b);
@@ -268,12 +419,15 @@ export default function EventsPage() {
                 title: pickLocalized(header, "title") || tr("fallback_title", "Fairs and Events"),
                 subtitle:
                   pickLocalized(header, "subtitle") ||
-                  tr("fallback_subtitle", "Join our premier international education fairs, workshops, and seminars."),
+                  tr(
+                    "fallback_subtitle",
+                    "Join our premier international education fairs, workshops, and seminars."
+                  ),
                 header_image_url:
                   header.header_image_url ||
                   header.header_image ||
                   header.image ||
-                  "https://images.unsplash.com/photo-1560439514-4e280ea57c89?w=1920&h=400&fit=crop&q=80",
+                  "https://images.unsplash.com/photo-1523050854058-8df90110c9f1?w=1920&h=420&fit=crop&q=80",
               }
             : {
                 title: tr("fallback_title", "Fairs and Events"),
@@ -281,15 +435,20 @@ export default function EventsPage() {
                   "fallback_subtitle",
                   "Join our premier international education fairs, workshops, and seminars."
                 ),
-                header_image_url: "https://images.unsplash.com/photo-1560439514-4e280ea57c89?w=1920&h=400&fit=crop&q=80",
+                header_image_url:
+                  "https://images.unsplash.com/photo-1523050854058-8df90110c9f1?w=1920&h=420&fit=crop&q=80",
               }
         );
       } catch (e) {
         console.error("Error loading events:", e);
         setPageContent({
           title: tr("fallback_title", "Fairs and Events"),
-          subtitle: tr("fallback_subtitle", "Join our premier international education fairs, workshops, and seminars."),
-          header_image_url: "https://images.unsplash.com/photo-1560439514-4e280ea57c89?w=1920&h=400&fit=crop&q=80",
+          subtitle: tr(
+            "fallback_subtitle",
+            "Join our premier international education fairs, workshops, and seminars."
+          ),
+          header_image_url:
+            "https://images.unsplash.com/photo-1523050854058-8df90110c9f1?w=1920&h=420&fit=crop&q=80",
         });
       } finally {
         setLoading(false);
@@ -299,8 +458,6 @@ export default function EventsPage() {
     load();
   }, [lang, tr]);
 
-  if (loading) return <PageSkeleton />;
-
   const now = new Date();
 
   const isArchived = (e) => {
@@ -308,83 +465,162 @@ export default function EventsPage() {
     return !!(a && a < now);
   };
 
-  // Only use end date if parseable; if missing/invalid, treat as past so it doesn't disappear.
-  const upcomingEvents = events
-    .filter((e) => {
-      const end = toJsDate(e.end);
-      return !!(end && end >= now && !isArchived(e));
-    })
-    .sort((a, b) => (toJsDate(a.start)?.getTime() ?? 0) - (toJsDate(b.start)?.getTime() ?? 0));
+  // retain original logic exactly
+  const upcomingEvents = useMemo(() => {
+    return events
+      .filter((e) => {
+        const end = toJsDate(e.end);
+        return !!(end && end >= now && !isArchived(e));
+      })
+      .sort((a, b) => (toJsDate(a.start)?.getTime() ?? 0) - (toJsDate(b.start)?.getTime() ?? 0));
+  }, [events]);
 
-  const pastEvents = events
-    .filter((e) => {
-      const end = toJsDate(e.end);
-      // Past if ended, archived, OR end is missing/invalid (so it still shows somewhere)
-      return isArchived(e) || !end || end < now;
-    })
-    .sort((a, b) => (toJsDate(b.end)?.getTime() ?? 0) - (toJsDate(a.end)?.getTime() ?? 0))
-    .slice(0, 12);
+  // retain original logic exactly
+  const pastEvents = useMemo(() => {
+    return events
+      .filter((e) => {
+        const end = toJsDate(e.end);
+        return isArchived(e) || !end || end < now;
+      })
+      .sort((a, b) => (toJsDate(b.end)?.getTime() ?? 0) - (toJsDate(a.end)?.getTime() ?? 0))
+      .slice(0, 12);
+  }, [events]);
+
+  const countries = useMemo(() => {
+    const set = new Set();
+    events.forEach((event) => {
+      const country = getCountryFromEvent(event);
+      if (country && String(country).trim()) set.add(String(country).trim());
+    });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [events]);
+
+  const displayedEventsRaw = activeTab === "past" ? pastEvents : upcomingEvents;
+
+  const displayedEvents = useMemo(() => {
+    return displayedEventsRaw.filter((event) => {
+      if (!selectedCountry) return true;
+      const eventCountry = normalizeCountry(getCountryFromEvent(event));
+      return eventCountry === normalizeCountry(selectedCountry);
+    });
+  }, [displayedEventsRaw, selectedCountry]);
+
+  const featuredEvents = useMemo(() => {
+    const boosted = events.filter((e) => isBoostedNow(e));
+    const source = boosted.length ? boosted : upcomingEvents;
+    return source.slice(0, 5);
+  }, [events, upcomingEvents]);
+
+  const handleReset = () => {
+    setSelectedCountry("");
+    setActiveTab("upcoming");
+  };
+
+  if (loading) return <PageSkeleton />;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-[#f5f7f9]">
       {pageContent && (
-        <div className="relative bg-gray-800">
+        <div className="relative border-b border-gray-200 bg-[#dfe8ee]">
           <img
             src={pageContent.header_image_url}
             alt={tr("events_bg_alt", "Events background")}
             className="absolute inset-0 w-full h-full object-cover opacity-30"
           />
-          <div className="relative max-w-7xl mx-auto py-24 px-4 sm:py-32 sm:px-6 lg:px-8 text-center text-white">
-            <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl">{pageContent.title}</h1>
-            <p className="mt-6 max-w-3xl mx-auto text-xl">{pageContent.subtitle}</p>
+          <div className="relative max-w-7xl mx-auto px-4 py-14 md:py-16">
+            <div className="max-w-3xl">
+              <h1 className="text-3xl md:text-4xl font-extrabold text-[#16364f]">
+                {pageContent.title}
+              </h1>
+              <p className="mt-3 text-base md:text-lg text-[#32546b]">
+                {pageContent.subtitle}
+              </p>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto py-12 px-6 space-y-16">
-        {/* UPCOMING */}
-        <div>
-          <h2 className="text-3xl font-bold text-center mb-10">{tr("upcoming", "Upcoming Events")}</h2>
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        <FilterBox
+          countries={countries}
+          selectedCountry={selectedCountry}
+          setSelectedCountry={setSelectedCountry}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onReset={handleReset}
+          tr={tr}
+        />
 
-          {upcomingEvents.length > 0 ? (
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {upcomingEvents.map((event) => (
-                <EventCard key={event.id} event={event} tr={tr} />
-              ))}
+        <div className="mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-9">
+            <div className="mb-4 text-[15px] text-gray-600">
+              {tr("found_events", "We have found")}{" "}
+              <span className="font-bold text-gray-800">{displayedEvents.length}</span>{" "}
+              {tr("events_suffix", "event(s).")}
             </div>
-          ) : (
-            <Card>
-              <CardContent className="p-8 text-center text-gray-600">
-                <Calendar className="mx-auto h-10 w-10 text-gray-400" />
-                <h3 className="mt-3 text-lg font-medium text-gray-900">
-                  {tr("no_upcoming", "No Upcoming Events")}
-                </h3>
-                <p className="mt-1 text-sm text-gray-500">
-                  {tr("no_upcoming_body", "There are no upcoming events yet. Please check back later.")}
-                </p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
 
-        {/* PAST */}
-        <div>
-          <h2 className="text-3xl font-bold text-center mb-10">{tr("past", "Past Events")}</h2>
+            <div className="bg-white border border-gray-200 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px]">
+                  <thead className="bg-[#153b5b] text-white">
+                    <tr>
+                      <th className="text-left px-4 py-4 font-bold text-[16px]">
+                        {tr("name", "Name")}
+                      </th>
+                      <th className="text-left px-4 py-4 font-bold text-[16px]">
+                        {tr("location", "Location")}
+                      </th>
+                      <th className="text-left px-4 py-4 font-bold text-[16px]">
+                        {tr("date", "Date")}
+                      </th>
+                      <th className="text-left px-4 py-4 font-bold text-[16px]">
+                        {tr("register", "Register")}
+                      </th>
+                    </tr>
+                  </thead>
 
-          {pastEvents.length > 0 ? (
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {pastEvents.map((event) => (
-                <EventCard key={event.id} event={event} tr={tr} />
-              ))}
+                  <tbody className="bg-white">
+                    {displayedEvents.length > 0 ? (
+                      displayedEvents.map((event) => (
+                        <EventRow key={event.id} event={event} tr={tr} />
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="px-6 py-12 text-center text-gray-500">
+                          {activeTab === "past"
+                            ? tr("no_past_body", "No past events to show yet.")
+                            : tr(
+                                "no_upcoming_body",
+                                "There are no upcoming events yet. Please check back later."
+                              )}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          ) : (
-            <Card>
-              <CardContent className="p-8 text-center text-gray-600">
-                <h3 className="text-lg font-medium text-gray-900">{tr("no_past", "No Past Events")}</h3>
-                <p className="mt-1 text-sm text-gray-500">{tr("no_past_body", "No past events to show yet.")}</p>
-              </CardContent>
-            </Card>
-          )}
+          </div>
+
+          <aside className="lg:col-span-3">
+            <div className="bg-white border border-gray-200 p-5">
+              <h3 className="text-[18px] font-bold text-center text-gray-800 pb-4 border-b border-gray-200">
+                {tr("featured_events", "Featured Events")}
+              </h3>
+
+              <div className="pt-5 space-y-5">
+                {featuredEvents.length > 0 ? (
+                  featuredEvents.map((event) => (
+                    <FeaturedEventCard key={event.id} event={event} tr={tr} />
+                  ))
+                ) : (
+                  <p className="text-sm text-gray-500">
+                    {tr("no_featured", "No featured events yet.")}
+                  </p>
+                )}
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
     </div>

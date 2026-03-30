@@ -17,7 +17,6 @@ import AgentLeads from "@/pages/AgentLeads";
 import TutorStudents from "@/pages/TutorStudents";
 import TutorSessions from "@/pages/TutorSessions";
 import TutorAvailability from "@/pages/TutorAvailability";
-import TutorDetails from "@/pages/TutorDetails";
 import SchoolProfile from "@/pages/SchoolProfile";
 import SchoolLeads from "@/pages/SchoolLeads";
 import SchoolDetails from "@/pages/SchoolDetails";
@@ -193,7 +192,6 @@ export default function App() {
         <Route path="postdetail" element={<PostDetail />} />
         <Route path="eventdetails" element={<EventDetailsPage />} />
         <Route path="tutors" element={<Tutors />} />
-        <Route path="tutordetails" element={<TutorDetails />} />
 
         {/* Authenticated (all roles) */}
         <Route
