@@ -683,7 +683,7 @@ async function requireBearerUid(req) {
 }
 
 // ============================
-// Agent / Student Referral QR
+// Agent / Student / Tutor Referral QR
 // ============================
 
 async function getUserDocByUid(uid) {
@@ -724,8 +724,15 @@ function isSchoolRole(role) {
   return r === "school";
 }
 
+function isTutorRole(role) {
+  const r = normalizeRole(role);
+  return r === "tutor";
+}
+
 function sanitizeStudentPublic(studentDoc) {
   if (!studentDoc) return null;
+
+  const onboardingCompleted = studentDoc.onboarding_completed === true;
 
   return {
     studentId: studentDoc.id,
@@ -735,10 +742,9 @@ function sanitizeStudentPublic(studentDoc) {
     assigned_agent_id: studentDoc.assigned_agent_id || studentDoc.assignedAgentId || null,
     referred_by_agent_id:
       studentDoc.referred_by_agent_id || studentDoc.referredByAgentId || null,
-    profile_completed:
-      studentDoc.profile_completed ??
-      studentDoc.onboarding_completed ??
-      false,
+    onboarding_completed: onboardingCompleted,
+    profile_completed: onboardingCompleted,
+    qr_ready: onboardingCompleted,
   };
 }
 
@@ -837,6 +843,50 @@ exports.getMyAgentReferralToken = onRequest(async (req, res) => {
     } catch (e) {
       console.error("getMyAgentReferralToken error:", e);
       return res.status(500).json({ error: e?.message || "Failed to get referral token" });
+    }
+  });
+});
+
+exports.getMyTutorReferralToken = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "GET") {
+        return res.status(405).json({ error: "GET only" });
+      }
+
+      const { uid, decoded } = await requireBearerUid(req);
+      const userRef = admin.firestore().collection("users").doc(uid);
+      const userSnap = await userRef.get();
+
+      if (!userSnap.exists) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const user = userSnap.data() || {};
+      const role =
+        normalizeRole(user.role || user.user_type || user.selected_role || user.userType) ||
+        normalizeRole(decoded?.role);
+
+      if (!isTutorRole(role)) {
+        return res.status(403).json({ error: "Only tutor accounts can use referral QR" });
+      }
+
+      let token = user.tutorReferralQrToken;
+      if (!token) {
+        token = `tut_${randomToken(16)}`;
+        await userRef.set(
+          {
+            tutorReferralQrToken: token,
+            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+
+      return res.json({ ok: true, token });
+    } catch (e) {
+      console.error("getMyTutorReferralToken error:", e);
+      return res.status(500).json({ error: e?.message || "Failed to get tutor referral token" });
     }
   });
 });

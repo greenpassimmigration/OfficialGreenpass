@@ -172,6 +172,10 @@ function buildStudentReferralLink(token) {
   return `${APP_BASE.replace(/\/+$/, "")}/${createSchoolLeadsPath()}?student_ref=${encodeURIComponent(token)}`;
 }
 
+function buildTutorReferralLink(token) {
+  return `${APP_BASE.replace(/\/+$/, "")}/?tutor_ref=${encodeURIComponent(token)}`;
+}
+
 function buildCollaboratorReferralLink(token) {
   return `${APP_BASE.replace(/\/+$/, "")}/?ref=${encodeURIComponent(token)}`;
 }
@@ -235,6 +239,32 @@ async function getMyStudentReferralToken() {
 
   const data = await r.json().catch(() => ({}));
   if (!data?.token) throw new Error("No student token returned");
+  return data.token;
+}
+
+async function getMyTutorReferralToken() {
+  const user = auth.currentUser;
+  if (!user) throw new Error("Not signed in");
+
+  const idToken = await user.getIdToken();
+
+  const r = await fetch(
+    `${FUNCTIONS_BASE.replace(/\/+$/, "")}/getMyTutorReferralToken`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    }
+  );
+
+  if (!r.ok) {
+    const msg = await r.text().catch(() => "");
+    throw new Error(msg || "Failed to load tutor QR token");
+  }
+
+  const data = await r.json().catch(() => ({}));
+  if (!data?.token) throw new Error("No tutor token returned");
   return data.token;
 }
 
@@ -789,14 +819,14 @@ function StudentQrGuideCard({
           <p className="font-semibold">
             {tr(
               "qr.student_complete_profile_first",
-              "Complete your student profile first before sharing your QR."
+              "Complete onboarding first to unlock your QR."
             )}
           </p>
 
           <p className="text-sm mt-1 text-amber-800">
             {tr(
               "qr.student_complete_profile_help",
-              "Schools should only scan students with a complete profile. Fill in the missing required fields below, save your profile, and your Student QR will unlock automatically."
+              "Complete onboarding to unlock your Student QR. You can still finish the rest of your profile later."
             )}
           </p>
 
@@ -932,6 +962,9 @@ export default function Profile() {
   const [agentReferralToken, setAgentReferralToken] = useState("");
   const [agentReferralLink, setAgentReferralLink] = useState("");
   const [agentReferralQr, setAgentReferralQr] = useState("");
+  const [tutorReferralToken, setTutorReferralToken] = useState("");
+  const [tutorReferralLink, setTutorReferralLink] = useState("");
+  const [tutorReferralQr, setTutorReferralQr] = useState("");
   const [studentReferralToken, setStudentReferralToken] = useState("");
   const [studentReferralLink, setStudentReferralLink] = useState("");
   const [studentReferralQr, setStudentReferralQr] = useState("");
@@ -1341,8 +1374,8 @@ export default function Profile() {
 
   const studentQrReady = useMemo(() => {
     if (role !== "user") return false;
-    return studentQrChecklist.every((item) => item.done);
-  }, [role, studentQrChecklist]);
+    return Boolean(userDoc?.onboarding_completed);
+  }, [role, userDoc?.onboarding_completed]);
 
   const studentQrMissingItemsDetailed = useMemo(() => {
     if (role !== "user") return [];
@@ -1384,6 +1417,9 @@ export default function Profile() {
           setStudentReferralToken("");
           setStudentReferralLink("");
           setStudentReferralQr("");
+          setTutorReferralToken("");
+          setTutorReferralLink("");
+          setTutorReferralQr("");
           setCollaboratorReferralToken("");
           setCollaboratorReferralLink("");
           setCollaboratorReferralQr("");
@@ -1409,6 +1445,37 @@ export default function Profile() {
             setAgentReferralToken("");
             setAgentReferralLink("");
             setAgentReferralQr("");
+          }
+        } finally {
+          if (mounted) setQrLoading(false);
+        }
+        return;
+      }
+
+      if (role === "tutor") {
+        try {
+          setQrLoading(true);
+          const token = await getMyTutorReferralToken();
+          const link = buildTutorReferralLink(token);
+          if (!mounted) return;
+          setTutorReferralToken(token);
+          setTutorReferralLink(link);
+          setTutorReferralQr(buildQrImageUrl(link));
+          setAgentReferralToken("");
+          setAgentReferralLink("");
+          setAgentReferralQr("");
+          setStudentReferralToken("");
+          setStudentReferralLink("");
+          setStudentReferralQr("");
+          setCollaboratorReferralToken("");
+          setCollaboratorReferralLink("");
+          setCollaboratorReferralQr("");
+        } catch (e) {
+          console.error("Failed to load tutor referral QR:", e);
+          if (mounted) {
+            setTutorReferralToken("");
+            setTutorReferralLink("");
+            setTutorReferralQr("");
           }
         } finally {
           if (mounted) setQrLoading(false);
@@ -1464,6 +1531,9 @@ export default function Profile() {
             setAgentReferralToken("");
             setAgentReferralLink("");
             setAgentReferralQr("");
+            setTutorReferralToken("");
+            setTutorReferralLink("");
+            setTutorReferralQr("");
             setCollaboratorReferralToken("");
             setCollaboratorReferralLink("");
             setCollaboratorReferralQr("");
@@ -1503,6 +1573,9 @@ export default function Profile() {
         setStudentReferralToken("");
         setStudentReferralLink("");
         setStudentReferralQr("");
+        setTutorReferralToken("");
+        setTutorReferralLink("");
+        setTutorReferralQr("");
         setCollaboratorReferralToken("");
         setCollaboratorReferralLink("");
         setCollaboratorReferralQr("");
@@ -1664,38 +1737,6 @@ export default function Profile() {
     }
 
     if (role === "user") {
-      if (!form.bio?.trim()) {
-        setActiveTab("personal");
-        return alert(tr("alerts.required_bio", "Biography / Description is required."));
-      }
-      if (!form.current_level?.trim()) {
-        setActiveTab("personal");
-        return alert(tr("alerts.required_current_level", "Current level is required."));
-      }
-      if (!form.target_country?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_target_country", "Target country is required."));
-      }
-      if (!form.target_program?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_target_program", "Target program is required."));
-      }
-      if (!form.academic_background?.trim()) {
-        setActiveTab("details");
-        return alert(
-          tr("alerts.required_academic_background", "Academic background is required.")
-        );
-      }
-      if (!Array.isArray(form.preferred_programs) || form.preferred_programs.length === 0) {
-        setActiveTab("details");
-        return alert(
-          tr("alerts.required_preferred_programs", "Add at least 1 preferred program.")
-        );
-      }
-      if (!Array.isArray(form.study_areas) || form.study_areas.length === 0) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_study_areas", "Add at least 1 study area."));
-      }
       if (!userDoc?.onboarding_completed) {
         setActiveTab("details");
         return alert(tr("alerts.required_onboarding", "Please complete onboarding first."));
@@ -1710,10 +1751,6 @@ export default function Profile() {
       if (!form.business_license_mst?.trim()) {
         setActiveTab("details");
         return alert(tr("alerts.required_business_license", "Business license (MST) is required."));
-      }
-      if (!form.paypal_email?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_paypal_email", "PayPal email is required."));
       }
     }
 
@@ -1731,10 +1768,6 @@ export default function Profile() {
       if (!String(form.hourly_rate).trim()) {
         setActiveTab("details");
         return alert(tr("alerts.required_hourly_rate", "Hourly rate is required."));
-      }
-      if (!form.paypal_email?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_paypal_email", "PayPal email is required."));
       }
     }
 
@@ -1822,7 +1855,6 @@ export default function Profile() {
           company_name: form.company_name || "",
           business_license_mst: form.business_license_mst || "",
           year_established: form.year_established || "",
-          paypal_email: form.paypal_email || "",
           bio: form.bio || "",
         };
       }
@@ -1832,7 +1864,6 @@ export default function Profile() {
           specializations: csvToArray(form.specializations),
           experience_years: Number(form.experience_years) || 0,
           hourly_rate: Number(form.hourly_rate) || 0,
-          paypal_email: form.paypal_email || "",
           bio: form.bio || "",
         };
       }
@@ -1910,18 +1941,21 @@ export default function Profile() {
     role,
     agentReferralToken,
     studentReferralToken,
+    tutorReferralToken,
     collaboratorReferralToken
   );
   const activeQrLink = showReferralByRole(
     role,
     agentReferralLink,
     studentReferralLink,
+    tutorReferralLink,
     collaboratorReferralLink
   );
   const activeQrImage = showReferralByRole(
     role,
     agentReferralQr,
     studentReferralQr,
+    tutorReferralQr,
     collaboratorReferralQr
   );
 
@@ -1952,9 +1986,11 @@ export default function Profile() {
     a.download =
       role === "agent"
         ? "greenpass-agent-referral-qr.png"
-        : role === "collaborator"
-          ? "greenpass-collaborator-referral-qr.png"
-          : "greenpass-student-qr.png";
+        : role === "tutor"
+          ? "greenpass-tutor-referral-qr.png"
+          : role === "collaborator"
+            ? "greenpass-collaborator-referral-qr.png"
+            : "greenpass-student-qr.png";
     a.click();
   };
 
@@ -2704,16 +2740,6 @@ export default function Profile() {
                             className="mt-1"
                           />
                         </div>
-                        <div>
-                          <Label>{tr("paypal_email", "PayPal Email *")}</Label>
-                          <Input
-                            type="email"
-                            value={form.paypal_email}
-                            disabled={!isEditing}
-                            onChange={(e) => setField("paypal_email", e.target.value)}
-                            className="mt-1"
-                          />
-                        </div>
                       </div>
                     </ProfileSection>
                   )}
@@ -2756,16 +2782,6 @@ export default function Profile() {
                           </div>
                         </div>
 
-                        <div>
-                          <Label>{tr("paypal_email", "PayPal Email *")}</Label>
-                          <Input
-                            type="email"
-                            value={form.paypal_email}
-                            disabled={!isEditing}
-                            onChange={(e) => setField("paypal_email", e.target.value)}
-                            className="mt-1"
-                          />
-                        </div>
                       </div>
                     </ProfileSection>
                   )}
@@ -3005,7 +3021,7 @@ export default function Profile() {
                       </div>
                     ) : showStudent ? (
                       <>
-                        {!studentQrReady && (
+                        {!userDoc?.onboarding_completed && (
                           <div className="mb-6">
                             <StudentQrGuideCard
                               tr={tr}
@@ -3130,13 +3146,13 @@ export default function Profile() {
                                 <p className="font-semibold">
                                   {tr(
                                     "qr.student_complete_profile_first",
-                                    "Complete your student profile first before sharing your QR."
+                                    "Complete onboarding first to unlock your QR."
                                   )}
                                 </p>
                                 <p className="text-sm mt-1 text-amber-800">
                                   {tr(
                                     "qr.student_complete_profile_help",
-                                    "Schools should only see students with a finished profile. Save the missing details below, then come back to the QR tab."
+                                    "Complete onboarding first. Once onboarding is done, your Student QR will be available even if the rest of your profile is not finished yet."
                                   )}
                                 </p>
                                 {studentQrMissingItems.length > 0 ? (
@@ -3170,6 +3186,109 @@ export default function Profile() {
                           </div>
                         )}
                       </>
+                    ) : showTutor ? (
+                      <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
+                        <Card className="rounded-3xl border shadow-none">
+                          <CardContent className="p-5 flex flex-col items-center gap-4">
+                            {qrLoading ? (
+                              <div className="w-[280px] h-[280px] rounded-2xl border bg-gray-50 flex items-center justify-center">
+                                <Loader2 className="w-8 h-8 animate-spin text-gray-500" />
+                              </div>
+                            ) : tutorReferralQr ? (
+                              <img
+                                src={tutorReferralQr}
+                                alt="Tutor referral QR"
+                                className="w-[280px] h-[280px] object-contain rounded-2xl border bg-white"
+                              />
+                            ) : (
+                              <div className="w-[280px] h-[280px] rounded-2xl border bg-gray-50 flex items-center justify-center text-sm text-gray-500 text-center px-4">
+                                {tr("qr.unavailable", "QR code unavailable.")}
+                              </div>
+                            )}
+
+                            <div className="text-center">
+                              <p className="font-semibold text-gray-900">
+                                {tr("qr.tutor_title", "My Tutor QR")}
+                              </p>
+                              <p className="text-sm text-gray-600 mt-1">
+                                {tr(
+                                  "qr.tutor_help",
+                                  "Share this QR or link so users can open your tutor referral flow."
+                                )}
+                              </p>
+                            </div>
+                          </CardContent>
+                        </Card>
+
+                        <div className="space-y-5">
+                          <div className="space-y-2">
+                            <Label>{tr("qr.referral_link", "Referral Link")}</Label>
+                            <Input
+                              value={tutorReferralLink}
+                              readOnly
+                              className="bg-gray-50"
+                              placeholder={tr("qr.loading_link", "Loading referral link...")}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>{tr("qr.referral_token", "Referral Token")}</Label>
+                            <Input
+                              value={tutorReferralToken}
+                              readOnly
+                              className="bg-gray-50"
+                              placeholder={tr("qr.loading_token", "Loading token...")}
+                            />
+                          </div>
+
+                          <div className="flex flex-wrap gap-3">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={handleCopyReferralLink}
+                              disabled={!tutorReferralLink}
+                              className="rounded-xl"
+                            >
+                              <Copy className="w-4 h-4 mr-2" />
+                              {tr("qr.copy_link", "Copy Link")}
+                            </Button>
+
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={handleDownloadQr}
+                              disabled={!tutorReferralQr}
+                              className="rounded-xl"
+                            >
+                              <Download className="w-4 h-4 mr-2" />
+                              {tr("qr.download_qr", "Download QR")}
+                            </Button>
+
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => window.open(tutorReferralLink, "_blank", "noopener,noreferrer")}
+                              disabled={!tutorReferralLink}
+                              className="rounded-xl"
+                            >
+                              <ExternalLink className="w-4 h-4 mr-2" />
+                              {tr("qr.open_link", "Open Link")}
+                            </Button>
+                          </div>
+
+                          <div className="rounded-2xl border bg-blue-50 text-blue-900 p-4 text-sm leading-6">
+                            <p className="font-semibold mb-1">
+                              {tr("qr.how_it_works", "How it works")}
+                            </p>
+                            <p>
+                              {tr(
+                                "qr.tutor_how_it_works_body",
+                                "Share this QR with users who want to connect with you for tutoring services."
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                     ) : showCollaborator ? (
                       <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6 items-start">
                         <Card className="rounded-3xl border shadow-none">
@@ -3277,7 +3396,7 @@ export default function Profile() {
                       <div className="rounded-2xl border bg-gray-50 p-5 text-sm text-gray-600">
                         {tr(
                           "qr.not_available_for_role",
-                          "QR code is currently available for agent, student, and collaborator referral flows in this phase."
+                          "QR code is currently available for agent, student, tutor, and collaborator referral flows in this phase."
                         )}
                       </div>
                     )}
