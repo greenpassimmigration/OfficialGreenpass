@@ -43,6 +43,7 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 
 import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
+import SharedPaymentGateway from "@/components/payments/SharedPaymentGateway";
 
 // Prevent open-redirects: only allow internal paths like '/accept-org-invite?...'
 function safeInternalPath(p) {
@@ -350,34 +351,6 @@ const SUBSCRIPTION_PRICING = {
   collaborator: { label: "Collaborator", amount: 0, currency: "USD" },
 };
 
-function loadPayPalScript({ clientId, currency = "USD" }) {
-  return new Promise((resolve, reject) => {
-    if (typeof window === "undefined") return reject(new Error("No window"));
-    if (window.paypal) return resolve(true);
-
-    const existing = document.querySelector('script[data-paypal-sdk="true"]');
-    if (existing) {
-      existing.addEventListener("load", () => resolve(true));
-      existing.addEventListener("error", reject);
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = `https://www.paypal.com/sdk/js?client-id=${encodeURIComponent(
-      clientId
-    )}&currency=${encodeURIComponent(currency)}&intent=capture&components=buttons`;
-    script.async = true;
-    script.defer = true;
-    script.type = "text/javascript";
-    script.dataset.paypalSdk = "true";
-    script.setAttribute("data-paypal-sdk", "true");
-
-    script.onload = () => resolve(true);
-    script.onerror = (e) => reject(e);
-    document.body.appendChild(script);
-  });
-}
-
 export default function Onboarding() {
   const { t } = useTranslation();
   const tr = React.useCallback((key, def, opts = {}) => t(key, { defaultValue: def, ...opts }), [t]);
@@ -489,12 +462,8 @@ export default function Onboarding() {
   const [saving, setSaving] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const paypalContainerRef = useRef(null);
-  const [paypalReady, setPaypalReady] = useState(false);
   const [paypalError, setPaypalError] = useState("");
   const [submittingPayment, setSubmittingPayment] = useState(false);
-
-  const PAYPAL_CLIENT_ID = (import.meta?.env?.VITE_PAYPAL_CLIENT_ID || "").trim();
 
   const subscriptionRequired = useMemo(() => {
     if (!selectedRole) return false;
@@ -795,75 +764,6 @@ export default function Onboarding() {
     }
   };
 
-  useEffect(() => {
-    const run = async () => {
-      if (currentStep !== STEPS.SUBSCRIPTION) return;
-      if (selectedRole === "user" || selectedRole === "collaborator") return;
-      if (!subscriptionRequired) return;
-
-      setPaypalError("");
-      setPaypalReady(false);
-
-      if (!PAYPAL_CLIENT_ID) {
-        setPaypalError("PayPal is not configured (missing VITE_PAYPAL_CLIENT_ID). You can skip for now.");
-        return;
-      }
-
-      const plan = SUBSCRIPTION_PRICING[selectedRole] || SUBSCRIPTION_PRICING.user;
-      const amountValue = Number(plan.amount || 0).toFixed(2);
-
-      try {
-        await loadPayPalScript({ clientId: PAYPAL_CLIENT_ID, currency: plan.currency || "USD" });
-
-        if (!paypalContainerRef.current) return;
-        paypalContainerRef.current.innerHTML = "";
-
-        const buttons = window.paypal.Buttons({
-          createOrder: (data, actions) => {
-            return actions.order.create({
-              purchase_units: [
-                {
-                  description: `GreenPass Subscription (${plan.label}) - Yearly`,
-                  amount: { value: amountValue, currency_code: plan.currency || "USD" },
-                },
-              ],
-            });
-          },
-          onApprove: async (data, actions) => {
-            try {
-              setSubmittingPayment(true);
-              const details = await actions.order.capture();
-              await finalizeOnboarding({
-                subscriptionActive: true,
-                paypalOrderId: data?.orderID || "",
-                paypalDetails: details || null,
-                skipped: false,
-              });
-            } catch (e) {
-              console.error(e);
-              setPaypalError("Payment was approved but capture failed. Please try again.");
-            } finally {
-              setSubmittingPayment(false);
-            }
-          },
-          onCancel: () => setPaypalError("Payment cancelled. You can try again or skip for now."),
-          onError: (err) => {
-            console.error(err);
-            setPaypalError("PayPal error occurred. Please try again or skip for now.");
-          },
-        });
-
-        buttons.render(paypalContainerRef.current);
-        setPaypalReady(true);
-      } catch (e) {
-        console.error(e);
-        setPaypalError("Failed to load PayPal. You can skip for now.");
-      }
-    };
-
-    run();
-  }, [currentStep, selectedRole, PAYPAL_CLIENT_ID, subscriptionRequired]);
-
   const handleLogout = async () => {
     if (loggingOut) return;
     setLoggingOut(true);
@@ -1093,20 +993,41 @@ export default function Onboarding() {
 
             <div className="mt-4">
               {paypalError && (
-                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-3 mb-3">{paypalError}</div>
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-3 mb-3">
+                  {typeof paypalError === "string" ? paypalError : "Payment error. Please try again."}
+                </div>
               )}
 
-              <div className="rounded-lg border p-3">
-                <div className="text-sm font-semibold text-gray-900 mb-2">{tr("onboarding.payments.pay_with_paypal","Pay with PayPal")}</div>
-                <div ref={paypalContainerRef} />
-
-                {!paypalReady && !paypalError && (
-                  <div className="mt-2 text-sm text-gray-500 flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {tr("onboarding.payments.loading_paypal","Loading PayPal...")}
-                  </div>
-                )}
-              </div>
+              <SharedPaymentGateway
+                amountUSD={plan.amount}
+                itemDescription={`GreenPass Subscription (${plan.label}) - Yearly`}
+                payerName={formData.full_name || ""}
+                payerEmail={formData.email || ""}
+                onProcessing={() => {
+                  setSubmittingPayment(true);
+                  setPaypalError("");
+                }}
+                onDoneProcessing={() => {
+                  setSubmittingPayment(false);
+                }}
+                onCardPaymentSuccess={async (_method, transactionId, payload) => {
+                  await finalizeOnboarding({
+                    subscriptionActive: true,
+                    paypalOrderId: transactionId || "",
+                    paypalDetails: payload?.details || payload || null,
+                    skipped: false,
+                  });
+                }}
+                onError={(err) => {
+                  console.error("SharedPaymentGateway error:", err);
+                  setPaypalError(
+                    typeof err === "string"
+                      ? err
+                      : err?.message || "PayPal error occurred. Please try again."
+                  );
+                  setSubmittingPayment(false);
+                }}
+              />
             </div>
 
             <div className="mt-4 flex gap-3">

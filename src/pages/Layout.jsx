@@ -564,14 +564,6 @@ function buildAccountMenuItems(currentUser, tr) {
           icon: Headphones,
         },
     { label: tr("policyCenter", "Policy Center"), url: createPageUrl("PolicyCenter"), icon: ShieldCheck },
-    { label: tr("termsOfService", "Terms of Service"), url: createPageUrl("TermsOfService"), icon: FileText },
-    { label: tr("privacyPolicy", "Privacy Policy"), url: createPageUrl("PrivacyPolicy"), icon: ShieldCheck },
-    { label: tr("communityGuidelines", "Community Guidelines"), url: createPageUrl("CommunityGuidelines"), icon: BadgeCheck },
-    { label: tr("messagingPolicy", "Messaging and Investigation Policy"), url: createPageUrl("MessagingPolicy"), icon: Mailbox },
-    { label: tr("verificationPolicy", "Verification Policy"), url: createPageUrl("VerificationPolicy"), icon: UserCheck },
-    { label: tr("referralPolicy", "Referral and Invitation Policy"), url: createPageUrl("ReferralPolicy"), icon: Handshake },
-    { label: tr("refundPolicy", "Refund and Payment Review Policy"), url: createPageUrl("RefundPolicy"), icon: CreditCard },
-    { label: tr("immigrationDisclaimer", "Immigration and Outcome Disclaimer"), url: createPageUrl("ImmigrationDisclaimer"), icon: FileText },
     { label: tr("profileSettings", "Profile Settings"), url: createPageUrl("Profile"), icon: UserCog }
   );
 
@@ -1381,9 +1373,6 @@ function buildMobileNav(currentUser, hasReservation, latestReservationId, trFn) 
         { title: tr("myStudents", "My Students"), url: createPageUrl("TutorStudents"), icon: GraduationCap },
         { title: tr("planner", "Planner"), url: createPageUrl("Planner"), icon: Calendar },
         { title: tr("policyCenter", "Policy Center"), url: createPageUrl("PolicyCenter"), icon: ShieldCheck },
-        { title: tr("termsOfService", "Terms of Service"), url: createPageUrl("TermsOfService"), icon: FileText },
-        { title: tr("privacyPolicy", "Privacy Policy"), url: createPageUrl("PrivacyPolicy"), icon: ShieldCheck },
-        { title: tr("communityGuidelines", "Community Guidelines"), url: createPageUrl("CommunityGuidelines"), icon: BadgeCheck },
         { title: tr("profile", "Profile"), url: createPageUrl("Profile"), icon: UserCog },
       ]),
     };

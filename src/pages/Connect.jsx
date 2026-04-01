@@ -696,8 +696,12 @@ function ProfileDetailsPanel({
         <div className="flex h-full min-h-0 flex-col rounded-[20px] border border-slate-200 bg-white p-3 shadow-sm sm:rounded-[26px] sm:p-4">
           <div className="grid shrink-0 gap-3 xl:grid-cols-[0.88fr_1.42fr]">
             <div className="rounded-[22px] border border-slate-100 bg-white p-3 shadow-sm">
-              <div className="mx-auto flex h-32 w-full items-center justify-center overflow-hidden rounded-[20px] bg-[#dfe8f1] text-4xl font-bold text-[#173562] sm:h-40">
-                <img src={avatar} alt={name} className="h-full w-full object-cover" />
+              <div className="mx-auto flex h-32 w-full items-center justify-center overflow-hidden rounded-[20px] bg-[#eef3f8] p-2 sm:h-40">
+                <img
+                  src={avatar}
+                  alt={name}
+                  className="h-full w-full object-contain"
+                />
               </div>
 
               <div className="mt-3 line-clamp-2 text-center text-[22px] font-extrabold leading-tight tracking-tight text-[#0f2f63] sm:text-[28px]">
