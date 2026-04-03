@@ -165,11 +165,11 @@ async function getAllCountriesFallback(locale = "en") {
 }
 
 function buildAgentReferralLink(token) {
-  return `${APP_BASE.replace(/\/+$/, "")}/?ref=${encodeURIComponent(token)}`;
+  return `${APP_BASE.replace(/\/+$/, "")}/?agent_ref=${encodeURIComponent(token)}`;
 }
 
 function buildStudentReferralLink(token) {
-  return `${APP_BASE.replace(/\/+$/, "")}/${createSchoolLeadsPath()}?student_ref=${encodeURIComponent(token)}`;
+  return `${APP_BASE.replace(/\/+$/, "")}/scan/student?student_ref=${encodeURIComponent(token)}`;
 }
 
 function buildTutorReferralLink(token) {

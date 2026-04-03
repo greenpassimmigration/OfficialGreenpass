@@ -26,7 +26,6 @@ const createPageUrl =
       .replace(/[^\w/]/g, "")
       .toLowerCase());
 
-
 const REQUIRED_POLICY_KEYS = ["terms", "privacy", "community", "refund", "verification", "referral"];
 const CURRENT_POLICY_VERSION = "2026-03-21";
 
@@ -39,6 +38,20 @@ function hasCompletedPolicies(user) {
   );
 
   return allRequiredAccepted && acceptance?.version === CURRENT_POLICY_VERSION;
+}
+
+function buildStudentScanUrl(studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return createPageUrl("Dashboard");
+  return `/scan/student?student_ref=${encodeURIComponent(token)}`;
+}
+
+function appendStudentRefToUrl(baseUrl, studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return baseUrl;
+
+  const separator = String(baseUrl).includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}student_ref=${encodeURIComponent(token)}`;
 }
 
 import {
@@ -1539,6 +1552,17 @@ export default function Layout() {
   const [hasReservation, setHasReservation] = React.useState(false);
   const [latestReservationId, setLatestReservationId] = React.useState(null);
 
+  const studentRef =
+    new URLSearchParams(location.search).get("student_ref") ||
+    (typeof window !== "undefined" ? localStorage.getItem("gp_student_ref") || "" : "");
+
+  React.useEffect(() => {
+    if (!studentRef || typeof window === "undefined") return;
+    try {
+      localStorage.setItem("gp_student_ref", studentRef);
+    } catch {}
+  }, [studentRef]);
+
   const normalizeUser = React.useCallback((uid, data = {}, fbUser = {}) => {
     const full_name = data.full_name || data.displayName || fbUser.displayName || data.name || "";
     const user_type = (data.user_type || data.role || "student").toLowerCase();
@@ -1675,9 +1699,9 @@ export default function Layout() {
 
   React.useEffect(() => {
     if (currentUser?.onboarding_completed && location.pathname.toLowerCase().startsWith("/onboarding")) {
-      navigate(createPageUrl("Dashboard"), { replace: true });
+      navigate(buildStudentScanUrl(studentRef), { replace: true });
     }
-  }, [currentUser?.onboarding_completed, location.pathname, navigate]);
+  }, [currentUser?.onboarding_completed, location.pathname, navigate, studentRef]);
 
   if (loading) {
     return (
@@ -1710,7 +1734,7 @@ export default function Layout() {
   const policyCompleted = hasCompletedPolicies(currentUser);
 
   if (!onboardingCompleted && !isOnboardingRoute) {
-    return <Navigate to={createPageUrl("Onboarding")} replace />;
+    return <Navigate to={appendStudentRefToUrl(createPageUrl("Onboarding"), studentRef)} replace />;
   }
 
   if (isOnboardingRoute) {
@@ -1724,11 +1748,11 @@ export default function Layout() {
   }
 
   if (!policyCompleted && !isPolicyRoute) {
-    return <Navigate to={createPageUrl("PolicyCenter")} replace />;
+    return <Navigate to={appendStudentRefToUrl(createPageUrl("PolicyCenter"), studentRef)} replace />;
   }
 
   if (policyCompleted && pathname === createPageUrl("PolicyCenter").toLowerCase()) {
-    return <Navigate to={createPageUrl("Dashboard")} replace />;
+    return <Navigate to={buildStudentScanUrl(studentRef)} replace />;
   }
 
   if (isPolicyRoute) {

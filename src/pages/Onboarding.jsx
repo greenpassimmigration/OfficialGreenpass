@@ -45,6 +45,31 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firest
 import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 import SharedPaymentGateway from "@/components/payments/SharedPaymentGateway";
 
+async function linkAgentClient({ agentUid, studentUid, inviteId = "" }) {
+  if (!agentUid || !studentUid) return;
+
+  const relId = `${agentUid}_${studentUid}`;
+
+  await setDoc(
+    doc(db, "agent_clients", relId),
+    {
+      agent_id: agentUid,
+      agentId: agentUid,
+
+      student_id: studentUid,
+      studentId: studentUid,
+
+      source: "invite",
+      referralType: "invite",
+      inviteId: inviteId || "",
+
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
 // Prevent open-redirects: only allow internal paths like '/accept-org-invite?...'
 function safeInternalPath(p) {
   if (!p || typeof p !== "string") return "";
@@ -317,6 +342,7 @@ function buildUserDefaults({
     full_name,
     user_type: finalRole,
     userType: finalRole,
+    signup_entry_role: finalRole,
     phone: "",
     country: "",
     country_code: "",
@@ -350,6 +376,26 @@ const SUBSCRIPTION_PRICING = {
   vendor: { label: "Vendor", amount: 29, currency: "USD" },
   collaborator: { label: "Collaborator", amount: 0, currency: "USD" },
 };
+
+function buildStudentScanUrl(studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return "";
+  return `/scan/student?student_ref=${encodeURIComponent(token)}`;
+}
+
+function buildPolicyCenterUrl(studentRef = "") {
+  const token = String(studentRef || "").trim();
+  if (!token) return `/${createPageUrl("PolicyCenter")}`;
+  const qp = new URLSearchParams();
+  qp.set("student_ref", token);
+  return `/${createPageUrl("PolicyCenter")}?${qp.toString()}`;
+}
+
+function buildDashboardUrl(studentRef = "") {
+  const token = String(studentRef || "").trim();
+  if (!token) return createPageUrl("Dashboard");
+  return buildStudentScanUrl(token);
+}
 
 export default function Onboarding() {
   const { t } = useTranslation();
@@ -389,6 +435,13 @@ export default function Onboarding() {
   const collaboratorRef = useMemo(() => {
     const v = (params.get("ref") || "").toString().trim();
     return v;
+  }, [params]);
+
+  const studentRef = useMemo(() => {
+    return (
+      (params.get("student_ref") || "").toString().trim() ||
+      (typeof window !== "undefined" ? localStorage.getItem("gp_student_ref") || "" : "")
+    );
   }, [params]);
 
   const urlRoleRaw = useMemo(() => {
@@ -496,13 +549,16 @@ export default function Onboarding() {
         sessionStorage.setItem("onboarding_role", "collaborator");
         sessionStorage.setItem("onboarding_role_locked", "1");
       }
+      if (studentRef) {
+        localStorage.setItem("gp_student_ref", studentRef);
+      }
     } catch {}
-  }, [collaboratorInviteFlow]);
+  }, [collaboratorInviteFlow, studentRef]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
-        navigate(createPageUrl("Welcome"), { replace: true });
+        navigate(studentRef ? `${createPageUrl("Welcome")}?student_ref=${encodeURIComponent(studentRef)}` : createPageUrl("Welcome"), { replace: true });
         return;
       }
 
@@ -553,6 +609,7 @@ export default function Onboarding() {
           user_type: effectiveRole,
           userType: effectiveRole,
           role: effectiveRole,
+          signup_entry_role: effectiveRole,
           onboarding_step: STEPS.BASIC_INFO,
           ...(collaboratorInviteFlow && collaboratorRef
             ? {
@@ -573,7 +630,8 @@ export default function Onboarding() {
           (data.selected_role !== effectiveRole ||
             data.user_type !== effectiveRole ||
             data.userType !== effectiveRole ||
-            data.role !== effectiveRole);
+            data.role !== effectiveRole ||
+            data.signup_entry_role !== effectiveRole);
 
         if (needsRoleSync || (collaboratorInviteFlow && collaboratorRef && !data.referred_by_collaborator_code)) {
           await updateDoc(ref, {
@@ -581,6 +639,7 @@ export default function Onboarding() {
             user_type: effectiveRole,
             userType: effectiveRole,
             role: effectiveRole,
+            signup_entry_role: effectiveRole,
             ...(collaboratorInviteFlow && collaboratorRef
               ? {
                   referred_by_collaborator_code:
@@ -614,10 +673,11 @@ export default function Onboarding() {
           sessionStorage.removeItem("onboarding_role_locked");
           sessionStorage.removeItem("onboarding_role");
         } catch {}
+
         navigate(
           data?.policy_acceptance?.completed === true
-            ? next || createPageUrl("Dashboard")
-            : `/${createPageUrl("PolicyCenter")}`,
+            ? next || buildDashboardUrl(studentRef)
+            : buildPolicyCenterUrl(studentRef),
           { replace: true }
         );
         return;
@@ -628,7 +688,7 @@ export default function Onboarding() {
     });
 
     return () => unsub();
-  }, [navigate, next, collaboratorInviteFlow, collaboratorRef]);
+  }, [navigate, next, collaboratorInviteFlow, collaboratorRef, studentRef]);
 
   const handleRoleSelect = async (roleType) => {
     if (roleLockedFromEntry) return;
@@ -642,6 +702,7 @@ export default function Onboarding() {
         user_type: roleType,
         userType: roleType,
         role: roleType,
+        signup_entry_role: roleType,
         onboarding_step: STEPS.BASIC_INFO,
         updated_at: serverTimestamp(),
       });
@@ -650,9 +711,16 @@ export default function Onboarding() {
 
   const validateBasicInfo = () => !!(formData.full_name && formData.phone && formData.country);
 
-  const finalizeOnboarding = async ({ subscriptionActive, paypalOrderId = "", paypalDetails = null, skipped = false }) => {
+  const finalizeOnboarding = async ({
+    subscriptionActive,
+    paypalOrderId = "",
+    paypalDetails = null,
+    skipped = false,
+  }) => {
     if (!auth.currentUser || !selectedRole) return;
+
     setSaving(true);
+
     try {
       const uid = auth.currentUser.uid;
       const ref = doc(db, "users", uid);
@@ -685,6 +753,34 @@ export default function Onboarding() {
 
       await updateDoc(ref, updates);
 
+      // Link invited student to agent_clients
+      try {
+        const userSnap = await getDoc(ref);
+        const userData = userSnap.data() || {};
+        const invitedBy = userData?.invited_by || {};
+
+        const agentUid =
+          invitedBy?.uid ||
+          userData?.assigned_agent_id ||
+          userData?.assignedAgentId ||
+          userData?.referred_by_agent_id ||
+          userData?.referredByAgentId ||
+          "";
+
+        const isInvitedByAgent =
+          String(invitedBy?.role || "").toLowerCase() === "agent";
+
+        if (isInvitedByAgent && agentUid && uid) {
+          await linkAgentClient({
+            agentUid,
+            studentUid: uid,
+            inviteId: invitedBy?.inviteId || "",
+          });
+        }
+      } catch (e) {
+        console.error("Error linking agent client:", e);
+      }
+
       setCurrentStep(STEPS.COMPLETE);
 
       try {
@@ -692,7 +788,7 @@ export default function Onboarding() {
         sessionStorage.removeItem("onboarding_role");
       } catch {}
 
-      setTimeout(() => navigate(`/${createPageUrl("PolicyCenter")}`, { replace: true }), 600);
+      setTimeout(() => navigate(buildPolicyCenterUrl(studentRef), { replace: true }), 600);
     } catch (e) {
       console.error("Error finalizing onboarding:", e);
       alert("An error occurred. Please try again.");
@@ -723,6 +819,7 @@ export default function Onboarding() {
         user_type: selectedRole,
         userType: selectedRole,
         role: selectedRole,
+        signup_entry_role: selectedRole,
         ...(selectedRole === "collaborator" && collaboratorRef
           ? {
               referred_by_collaborator_code: collaboratorRef,
@@ -772,7 +869,10 @@ export default function Onboarding() {
     } catch (e) {
       // ignore
     } finally {
-      navigate(createPageUrl("Welcome"), { replace: true });
+      const welcomeUrl = studentRef
+        ? `${createPageUrl("Welcome")}?student_ref=${encodeURIComponent(studentRef)}`
+        : createPageUrl("Welcome");
+      navigate(welcomeUrl, { replace: true });
       setLoggingOut(false);
     }
   };
@@ -886,6 +986,20 @@ export default function Onboarding() {
           </div>
         )}
 
+        {studentRef && (
+          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4 text-left">
+            <div className="text-sm font-semibold text-blue-900">
+              {tr("onboarding.student_scan.title", "Student QR detected")}
+            </div>
+            <div className="mt-1 text-sm text-blue-800">
+              {tr(
+                "onboarding.student_scan.text",
+                "Finish your setup first. After onboarding and policy acceptance, we’ll continue the scanned student connection automatically."
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-6">
           <div>
             <Label htmlFor="full_name">{tr("onboarding.fields.full_name","Full Name *")}</Label>
@@ -926,13 +1040,14 @@ export default function Onboarding() {
             <CountrySelect
               valueCode={formData.country_code || ""}
               valueName={formData.country || ""}
-              onChange={(c) =>
+              onChange={(c) => {
+                formDirtyRef.current = true;
                 setFormData((p) => ({
                   ...p,
                   country: c.name,
                   country_code: c.code,
-                }))
-              }
+                }));
+              }}
             />
             <p className="text-xs text-gray-500 mt-1">{tr("onboarding.fields.country_hint","Search and select your country (with flag).")}</p>
           </div>
@@ -990,6 +1105,15 @@ export default function Onboarding() {
                 Subscription unlocks your full {plan.label.toLowerCase()} features.
               </div>
             </div>
+
+            {studentRef && (
+              <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                {tr(
+                  "onboarding.subscription.student_scan_note",
+                  "Your scanned student connection is saved and will continue automatically after onboarding."
+                )}
+              </div>
+            )}
 
             <div className="mt-4">
               {paypalError && (
@@ -1064,7 +1188,11 @@ export default function Onboarding() {
       <h2 className="text-3xl font-bold text-gray-900 mb-4">{tr("onboarding.ui.welcome","Welcome to GreenPass!")}</h2>
       <p className="text-gray-600 mb-6">Your account has been set up successfully. Get ready to start your journey!</p>
       <div className="bg-green-50 rounded-lg p-4 mb-6">
-        <p className="text-sm text-green-800">{tr("onboarding.ui.redirecting","Redirecting to your personalized dashboard...")}</p>
+        <p className="text-sm text-green-800">
+          {studentRef
+            ? tr("onboarding.ui.redirecting_student_scan","Finishing setup and continuing your scanned student connection...")
+            : tr("onboarding.ui.redirecting","Redirecting to your personalized dashboard...")}
+        </p>
       </div>
       <div className="flex justify-center">
         <Loader2 className="w-6 h-6 animate-spin text-green-600" />

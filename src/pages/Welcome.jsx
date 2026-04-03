@@ -1,7 +1,7 @@
 // src/pages/Welcome.jsx
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
-import { Mail, Lock, User as UserIcon, Eye, EyeOff, Check, X, Loader2 } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, Check, X, Loader2 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { Input } from "@/components/ui/input";
@@ -25,7 +25,17 @@ import {
   setPersistence,
   browserLocalPersistence,
 } from "firebase/auth";
-import { collection, doc, getDoc, getDocs, limit, query, setDoc, serverTimestamp, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  setDoc,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
 
 function InfoDialog({ open, title, message, onClose, okLabel = "OK" }) {
   if (!open) return null;
@@ -55,7 +65,7 @@ const GoogleIcon = ({ className = "mr-3 h-5 w-5" }) => (
   </svg>
 );
 
-const VALID_ROLES = ["user", "agent", "tutor", "school", "vendor"];
+const VALID_ROLES = ["user", "agent", "tutor", "school", "vendor", "collaborator"];
 const DEFAULT_ROLE = "user";
 
 const SIGNUP_ROLE_OPTIONS = [
@@ -67,6 +77,10 @@ const SIGNUP_ROLE_OPTIONS = [
 
 const APP_LOGO_URL =
   "https://firebasestorage.googleapis.com/v0/b/greenpass-dc92d.firebasestorage.app/o/rawdatas%2FGreenPass%20Official.png?alt=media&token=809da08b-22f6-4049-bbbf-9b82342630e8";
+
+const FUNCTIONS_BASE =
+  import.meta.env.VITE_FUNCTIONS_HTTP_BASE ||
+  "https://us-central1-greenpass-dc92d.cloudfunctions.net";
 
 function normalizeRole(r) {
   const v = (r || "").toString().trim().toLowerCase();
@@ -91,6 +105,10 @@ function buildUserDoc({
   signupEntryRole = DEFAULT_ROLE,
   collaboratorRef = "",
   referredByCollaboratorUid = "",
+  referredByAgentId = "",
+  assignedAgentId = "",
+  referredByTutorId = "",
+  tutorStudentStatus = "",
 }) {
   return {
     role: userType,
@@ -107,8 +125,10 @@ function buildUserDoc({
     onboarding_completed: false,
     kyc_document_id: "",
     kyc_document_url: "",
-    assigned_agent_id: "",
-    referred_by_agent_id: "",
+    assigned_agent_id: assignedAgentId || "",
+    referred_by_agent_id: referredByAgentId || "",
+    referred_by_tutor_id: referredByTutorId || "",
+    tutor_student_status: tutorStudentStatus || "",
     purchased_packages: [],
     purchased_tutor_packages: [],
     session_credits: 0,
@@ -174,15 +194,156 @@ async function resolveCollaboratorRef(refCode) {
   }
 }
 
-async function routeAfterSignIn(navigate, fbUser, roleHint = DEFAULT_ROLE, collaboratorRef = "") {
+function buildOnboardingUrl({
+  role = DEFAULT_ROLE,
+  collaboratorRef = "",
+  agentRef = "",
+  tutorRef = "",
+  studentRef = "",
+}) {
+  const qp = new URLSearchParams();
+  qp.set("role", role);
+
+  if (collaboratorRef) qp.set("ref", collaboratorRef);
+  if (agentRef) qp.set("agent_ref", agentRef);
+  if (tutorRef) qp.set("tutor_ref", tutorRef);
+  if (studentRef) qp.set("student_ref", studentRef);
+
+  return `${createPageUrl("Onboarding")}?${qp.toString()}`;
+}
+
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok) {
+    const err = new Error(data?.error || data?.message || `Request failed: ${res.status}`);
+    err.status = res.status;
+    err.payload = data;
+    throw err;
+  }
+
+  return data;
+}
+
+async function resolveAgentReferral(agentRef) {
+  const token = String(agentRef || "").trim();
+  if (!token) return null;
+
+  try {
+    return await fetchJson(
+      `${FUNCTIONS_BASE}/getAgentReferralPublic?ref=${encodeURIComponent(token)}`
+    );
+  } catch (error) {
+    console.error("resolveAgentReferral error:", error);
+    return null;
+  }
+}
+
+async function resolveTutorReferral(tutorRef) {
+  const token = String(tutorRef || "").trim();
+  if (!token) return null;
+
+  try {
+    return await fetchJson(
+      `${FUNCTIONS_BASE}/getTutorReferralPublic?tutor_ref=${encodeURIComponent(token)}`
+    );
+  } catch (error) {
+    console.error("resolveTutorReferral error:", error);
+    return null;
+  }
+}
+
+async function acceptAgentReferralForUser(fbUser, agentRef) {
+  const token = String(agentRef || "").trim();
+  if (!token || !fbUser) return null;
+
+  try {
+    const idToken = await fbUser.getIdToken();
+    return await fetchJson(`${FUNCTIONS_BASE}/acceptAgentReferral`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ ref: token }),
+    });
+  } catch (error) {
+    console.error("acceptAgentReferralForUser error:", error);
+    return null;
+  }
+}
+
+async function acceptTutorReferralForUser(fbUser, tutorRef) {
+  const token = String(tutorRef || "").trim();
+  if (!token || !fbUser) return null;
+
+  try {
+    const idToken = await fbUser.getIdToken();
+    return await fetchJson(`${FUNCTIONS_BASE}/acceptTutorReferral`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ tutor_ref: token }),
+    });
+  } catch (error) {
+    console.error("acceptTutorReferralForUser error:", error);
+    return null;
+  }
+}
+
+function buildStudentScanUrl(studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return "";
+  return `/scan/student?student_ref=${encodeURIComponent(token)}`;
+}
+
+async function routeAfterSignIn(
+  navigate,
+  fbUser,
+  roleHint = DEFAULT_ROLE,
+  referralContext = {
+    collaboratorRef: "",
+    agentRef: "",
+    tutorRef: "",
+    studentRef: "",
+  }
+) {
+  const collaboratorRef = String(referralContext?.collaboratorRef || "").trim();
+  const agentRef = String(referralContext?.agentRef || "").trim();
+  const tutorRef = String(referralContext?.tutorRef || "").trim();
+  const studentRef = String(referralContext?.studentRef || "").trim();
+
   const ref = doc(db, "users", fbUser.uid);
   const snap = await getDoc(ref);
+
   const isCollaboratorInvite =
     String(roleHint || "").trim().toLowerCase() === "collaborator" && !!collaboratorRef;
-  const referredByCollaboratorUid = await resolveCollaboratorRef(collaboratorRef);
+
+  const isAgentInvite =
+    String(roleHint || "").trim().toLowerCase() === "user" && !!agentRef;
+
+  const isTutorInvite =
+    String(roleHint || "").trim().toLowerCase() === "user" && !!tutorRef;
+
+  const referredByCollaboratorUid = collaboratorRef
+    ? await resolveCollaboratorRef(collaboratorRef)
+    : "";
+
+  const agentInviteData = agentRef ? await resolveAgentReferral(agentRef) : null;
+  const tutorInviteData = tutorRef ? await resolveTutorReferral(tutorRef) : null;
 
   if (!snap.exists()) {
     const createRole = isCollaboratorInvite ? "collaborator" : normalizeRole(roleHint);
+
     await setDoc(
       ref,
       buildUserDoc({
@@ -192,41 +353,117 @@ async function routeAfterSignIn(navigate, fbUser, roleHint = DEFAULT_ROLE, colla
         signupEntryRole: createRole,
         collaboratorRef,
         referredByCollaboratorUid,
+        referredByAgentId:
+          agentInviteData?.agentUid ||
+          agentInviteData?.uid ||
+          agentInviteData?.userId ||
+          "",
+        assignedAgentId:
+          agentInviteData?.agentUid ||
+          agentInviteData?.uid ||
+          agentInviteData?.userId ||
+          "",
+        referredByTutorId:
+          tutorInviteData?.tutorUid ||
+          tutorInviteData?.uid ||
+          tutorInviteData?.userId ||
+          "",
+        tutorStudentStatus: isTutorInvite ? "pending" : "",
       }),
       { merge: true }
     );
+
+    if (isAgentInvite) {
+      await acceptAgentReferralForUser(fbUser, agentRef);
+    }
+
+    if (isTutorInvite) {
+      await acceptTutorReferralForUser(fbUser, tutorRef);
+    }
+
     return navigate(
-      `${createPageUrl("Onboarding")}?role=${createRole}${
-        collaboratorRef ? `&ref=${encodeURIComponent(collaboratorRef)}` : ""
-      }`
+      buildOnboardingUrl({
+        role: createRole,
+        collaboratorRef,
+        agentRef,
+        tutorRef,
+        studentRef,
+      })
     );
   }
 
   const profile = snap.data();
 
+  const mergePayload = {
+    updated_at: serverTimestamp(),
+  };
+
   if (collaboratorRef && !profile?.referred_by_collaborator_code) {
-    await setDoc(
-      ref,
-      {
-        ...buildCollaboratorReferralFields(
-          collaboratorRef,
-          profile?.referred_by_collaborator_uid || referredByCollaboratorUid
-        ),
-        updated_at: serverTimestamp(),
-      },
-      { merge: true }
+    Object.assign(
+      mergePayload,
+      buildCollaboratorReferralFields(
+        collaboratorRef,
+        profile?.referred_by_collaborator_uid || referredByCollaboratorUid
+      )
     );
+  }
+
+  if (isAgentInvite) {
+    const resolvedAgentUid =
+      agentInviteData?.agentUid ||
+      agentInviteData?.uid ||
+      agentInviteData?.userId ||
+      "";
+
+    if (resolvedAgentUid && !profile?.referred_by_agent_id) {
+      mergePayload.referred_by_agent_id = resolvedAgentUid;
+    }
+    if (resolvedAgentUid && !profile?.assigned_agent_id) {
+      mergePayload.assigned_agent_id = resolvedAgentUid;
+    }
+
+    await acceptAgentReferralForUser(fbUser, agentRef);
+  }
+
+  if (isTutorInvite) {
+    const resolvedTutorUid =
+      tutorInviteData?.tutorUid ||
+      tutorInviteData?.uid ||
+      tutorInviteData?.userId ||
+      "";
+
+    if (resolvedTutorUid && !profile?.referred_by_tutor_id) {
+      mergePayload.referred_by_tutor_id = resolvedTutorUid;
+    }
+    if (!profile?.tutor_student_status) {
+      mergePayload.tutor_student_status = "pending";
+    }
+
+    await acceptTutorReferralForUser(fbUser, tutorRef);
+  }
+
+  if (Object.keys(mergePayload).length > 1) {
+    await setDoc(ref, mergePayload, { merge: true });
   }
 
   if (!profile?.onboarding_completed) {
     const roleToUse = isCollaboratorInvite
       ? "collaborator"
       : normalizeRole(profile?.user_type || roleHint || DEFAULT_ROLE);
+
     return navigate(
-      `${createPageUrl("Onboarding")}?role=${roleToUse}${
-        collaboratorRef ? `&ref=${encodeURIComponent(collaboratorRef)}` : ""
-      }`
+      buildOnboardingUrl({
+        role: roleToUse,
+        collaboratorRef,
+        agentRef,
+        tutorRef,
+        studentRef,
+      })
     );
+  }
+
+  if (studentRef) {
+    return navigate(buildStudentScanUrl(studentRef));
   }
 
   return navigate(createPageUrl("Dashboard"));
@@ -243,11 +480,31 @@ export default function Welcome() {
     const langFromUrl = params.get("lang");
     const saved = localStorage.getItem("gp_lang");
     const nextLang = langFromUrl || saved || i18n?.language || "en";
+
     if (i18n?.language !== nextLang) i18n.changeLanguage(nextLang);
     localStorage.setItem("gp_lang", nextLang);
 
-    const refCode = params.get("ref");
-    if (refCode) localStorage.setItem("gp_collaborator_ref", refCode);
+    const collaboratorRef = (params.get("ref") || "").trim();
+    const rawRole = (params.get("role") || params.get("userType") || "").toString().trim().toLowerCase();
+    const agentRef = (params.get("agent_ref") || "").trim();
+    const tutorRef = (params.get("tutor_ref") || "").trim();
+    const studentRef = (params.get("student_ref") || "").trim();
+
+    if (rawRole === "collaborator" && collaboratorRef) {
+      localStorage.setItem("gp_collaborator_ref", collaboratorRef);
+    }
+
+    if (agentRef) {
+      localStorage.setItem("gp_agent_ref", agentRef);
+    }
+
+    if (tutorRef) {
+      localStorage.setItem("gp_tutor_ref", tutorRef);
+    }
+
+    if (studentRef) {
+      localStorage.setItem("gp_student_ref", studentRef);
+    }
   }, [params, i18n]);
 
   const collaboratorInviteFlow = useMemo(() => {
@@ -256,23 +513,66 @@ export default function Welcome() {
     return rawRole === "collaborator" && !!refCode;
   }, [params]);
 
+  const agentInviteFlow = useMemo(() => {
+    const agentRef = (params.get("agent_ref") || "").toString().trim();
+    return !!agentRef;
+  }, [params]);
+
+  const tutorInviteFlow = useMemo(() => {
+    const tutorRef = (params.get("tutor_ref") || "").toString().trim();
+    return !!tutorRef;
+  }, [params]);
+
+  const studentScanFlow = useMemo(() => {
+    const studentRef = (params.get("student_ref") || "").toString().trim();
+    return !!studentRef;
+  }, [params]);
+
+  const referralContext = useMemo(() => {
+    return {
+      collaboratorRef:
+        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || "",
+      agentRef:
+        params.get("agent_ref") || localStorage.getItem("gp_agent_ref") || "",
+      tutorRef:
+        params.get("tutor_ref") || localStorage.getItem("gp_tutor_ref") || "",
+      studentRef:
+        params.get("student_ref") || localStorage.getItem("gp_student_ref") || "",
+    };
+  }, [params]);
+
   const entryRole = useMemo(() => {
     if (collaboratorInviteFlow) return "collaborator";
+    if (agentInviteFlow || tutorInviteFlow) return "user";
+
     const raw = params.get("role") ?? params.get("userType");
     return normalizeRole(raw);
-  }, [params, collaboratorInviteFlow]);
+  }, [params, collaboratorInviteFlow, agentInviteFlow, tutorInviteFlow]);
 
-  const [mode, setMode] = useState(collaboratorInviteFlow ? "signup" : "signin");
-  const [signupRole, setSignupRole] = useState(() => (entryRole && entryRole !== DEFAULT_ROLE ? entryRole : ""));
+  const forcedSignupFlow = collaboratorInviteFlow || agentInviteFlow || tutorInviteFlow;
+
+  const [mode, setMode] = useState(forcedSignupFlow ? "signup" : "signin");
+  const [signupRole, setSignupRole] = useState(() => {
+    if (collaboratorInviteFlow) return "collaborator";
+    if (agentInviteFlow || tutorInviteFlow) return "user";
+    return entryRole && entryRole !== DEFAULT_ROLE ? entryRole : "";
+  });
+
   const activeRole = mode === "signup" ? signupRole : entryRole;
-  const isRoleLocked = collaboratorInviteFlow;
+  const isRoleLocked = forcedSignupFlow;
 
   useEffect(() => {
     if (collaboratorInviteFlow) {
       setMode("signup");
       setSignupRole("collaborator");
+      return;
     }
-  }, [collaboratorInviteFlow]);
+
+    if (agentInviteFlow || tutorInviteFlow) {
+      setMode("signup");
+      setSignupRole("user");
+    }
+  }, [collaboratorInviteFlow, agentInviteFlow, tutorInviteFlow]);
 
   useEffect(() => {
     if (activeRole) sessionStorage.setItem("onboarding_role", activeRole);
@@ -306,21 +606,24 @@ export default function Welcome() {
       try {
         await setPersistence(auth, browserLocalPersistence);
       } catch {}
+
       unsub = onAuthStateChanged(auth, async (user) => {
         setChecking(false);
         if (user) {
           const roleHint = sessionStorage.getItem("onboarding_role") || entryRole || DEFAULT_ROLE;
+
           await routeAfterSignIn(
             navigate,
             user,
             roleHint,
-            params.get("ref") || localStorage.getItem("gp_collaborator_ref") || ""
+            referralContext
           );
         }
       });
     })();
+
     return () => unsub && unsub();
-  }, [navigate, entryRole]);
+  }, [navigate, entryRole, referralContext]);
 
   async function runEmailCheck(em, versionAtCall) {
     try {
@@ -376,7 +679,7 @@ export default function Welcome() {
         navigate,
         cred.user,
         activeRole || DEFAULT_ROLE,
-        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || ""
+        referralContext
       );
     } catch (err) {
       if (err?.code === "auth/account-exists-with-different-credential") {
@@ -411,7 +714,7 @@ export default function Welcome() {
         navigate,
         cred.user,
         activeRole || DEFAULT_ROLE,
-        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || ""
+        referralContext
       );
     } catch (err) {
       if (err?.code === "auth/operation-not-supported-in-this-environment") {
@@ -444,7 +747,13 @@ export default function Welcome() {
   const handleForgotPassword = () => {
     const em = (email || "").trim();
     const currentLang = params.get("lang") || localStorage.getItem("gp_lang") || i18n?.language || "en";
-    navigate(`${createPageUrl("ResetPassword")}?lang=${encodeURIComponent(currentLang)}`, { state: { email: em } });
+    const studentRef = String(referralContext?.studentRef || "").trim();
+
+    const qp = new URLSearchParams();
+    qp.set("lang", currentLang);
+    if (studentRef) qp.set("student_ref", studentRef);
+
+    navigate(`${createPageUrl("ResetPassword")}?${qp.toString()}`, { state: { email: em } });
   };
 
   const handleSignInEmail = async () => {
@@ -465,7 +774,7 @@ export default function Welcome() {
         navigate,
         cred.user,
         activeRole || DEFAULT_ROLE,
-        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || ""
+        referralContext
       );
     } catch (err) {
       if (err?.code === "auth/wrong-password" || err?.code === "auth/invalid-credential") {
@@ -552,11 +861,12 @@ export default function Welcome() {
       await updateProfile(cred.user, {
         displayName: em.split("@")[0] || "GreenPass User",
       });
+
       await routeAfterSignIn(
         navigate,
         cred.user,
         signupRole,
-        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || ""
+        referralContext
       );
     } catch (err) {
       let message = err?.message || tr("auth.signup_failed_message", "Sign-up failed.");
@@ -800,6 +1110,15 @@ export default function Welcome() {
                 <p className="mt-8 text-center text-sm font-semibold text-white/85">
                   {tr("one_platform", "One platform. One journey. Real connections that matter.")}
                 </p>
+
+                {studentScanFlow && (
+                  <div className="mx-auto mt-5 max-w-2xl rounded-2xl border border-emerald-200/40 bg-emerald-500/15 px-4 py-3 text-center text-sm text-white">
+                    {tr(
+                      "auth.student_scan_notice",
+                      "You scanned a student QR. Sign in as a School, Agent, or Tutor and we’ll continue the connection automatically."
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </section>
@@ -846,7 +1165,8 @@ export default function Welcome() {
                     }`}
                     onClick={() => {
                       setMode("signup");
-                      if (isRoleLocked) setSignupRole("collaborator");
+                      if (collaboratorInviteFlow) setSignupRole("collaborator");
+                      if (agentInviteFlow || tutorInviteFlow) setSignupRole("user");
                     }}
                   >
                     {tr("auth.signup", "Sign up")}
@@ -863,10 +1183,14 @@ export default function Welcome() {
                       <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
                         <div>
                           <div className="text-sm font-semibold text-emerald-800">
-                            {tr("role_collaborator", "Collaborator")}
+                            {collaboratorInviteFlow
+                              ? tr("role_collaborator", "Collaborator")
+                              : tr("roles.student", "Student")}
                           </div>
                           <div className="text-xs text-emerald-700">
-                            {tr("auth.role_locked_invite", "This role was assigned through your invitation link.")}
+                            {collaboratorInviteFlow
+                              ? tr("auth.role_locked_invite", "This role was assigned through your invitation link.")
+                              : tr("auth.role_locked_student_referral", "This signup came from an agent or tutor referral, so the role is locked to Student.")}
                           </div>
                         </div>
                         <div className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white">
@@ -919,7 +1243,6 @@ export default function Welcome() {
                 </div>
 
                 <div className="space-y-3">
-
                   <div>
                     <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-500">
                       {tr("auth.email", "Email")}
@@ -1048,7 +1371,9 @@ export default function Welcome() {
                   </Button>
 
                   <p className="text-center text-sm text-gray-500">
-                    {tr("auth.after_login_note", "After login, you will continue inside the GreenPass app.")}
+                    {studentScanFlow
+                      ? tr("auth.after_login_student_scan_note", "After login, we’ll continue the scanned student connection automatically.")
+                      : tr("auth.after_login_note", "After login, you will continue inside the GreenPass app.")}
                   </p>
                 </div>
               </div>
@@ -1057,7 +1382,10 @@ export default function Welcome() {
                 {mode === "signin" ? tr("auth.no_account", "Don’t have an account?") : tr("auth.have_account", "Have an account?")}{" "}
                 <button
                   type="button"
-                  onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
+                  onClick={() => {
+                    if (isRoleLocked && mode === "signup") return;
+                    setMode(mode === "signin" ? "signup" : "signin");
+                  }}
                   className="font-semibold text-blue-700 hover:text-blue-600"
                 >
                   {mode === "signin" ? tr("auth.signup", "Sign up") : tr("auth.signin", "Sign in")}
@@ -1077,8 +1405,4 @@ export default function Welcome() {
       />
     </div>
   );
-}
-
-function User({ as: Icon }) {
-  return <Icon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />;
 }

@@ -67,6 +67,7 @@ import ReferralPolicy from "@/pages/ReferralPolicy";
 import RefundPolicy from "@/pages/RefundPolicy";
 import ImmigrationDisclaimer from "@/pages/ImmigrationDisclaimer";
 import MessagingPolicy from "@/pages/MessagingPolicy";
+import StudentScanRouter from "./pages/StudentScanRouter";
 
 /* ---------- Firebase auth/profile (lightweight for route-guards) ---------- */
 import { auth, db } from "@/firebase";
@@ -187,6 +188,7 @@ export default function App() {
 
         {/* Auth pages */}
         <Route path="resetpassword" element={<ResetPassword />} />
+        <Route path="/scan/student" element={<StudentScanRouter />} />
 
         {/* Public content */}
         <Route path="postdetail" element={<PostDetail />} />

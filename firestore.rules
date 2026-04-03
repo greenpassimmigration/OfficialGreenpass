@@ -160,11 +160,8 @@ service cloud.firestore {
 
     // ---------- PROGRAM HELPERS ----------
     function validProgramCreate() {
-      // Support legacy fields (schoolId/programTitle/programLevel) and new fields
-      // (institution_id|institutionId, program_title, program_level)
       return signedIn()
         && (
-          // legacy (school-based)
           (
             (request.resource.data.schoolId is string) &&
             (request.resource.data.programTitle is string) &&
@@ -172,7 +169,6 @@ service cloud.firestore {
             (isAdmin() || ownsSchoolId(request.resource.data.schoolId))
           )
           ||
-          // new (institution-based)
           (
             (
               (request.resource.data.institution_id is string) ||
@@ -195,7 +191,6 @@ service cloud.firestore {
         && (
           isAdmin()
           ||
-          // legacy (school-based)
           (
             ((resource.data.schoolId is string) || (resource.data.school_id is string)) &&
             (
@@ -207,7 +202,6 @@ service cloud.firestore {
             ownsSchoolId(resource.data.schoolId != null ? resource.data.schoolId : resource.data.school_id)
           )
           ||
-          // new (institution-based)
           (
             (
               (resource.data.institution_id is string) ||
@@ -239,7 +233,6 @@ service cloud.firestore {
       return signedIn() ? request.auth.token.email : null;
     }
 
-    // Check if caller is the tutor of a TutoringSession doc (by uid OR email OR app user id fields)
     function isTutorOfSession(resDoc) {
       return signedIn() && (
         resDoc.data.tutor_auth_uid == request.auth.uid ||
@@ -261,7 +254,6 @@ service cloud.firestore {
       );
     }
 
-    // Check if caller is the student of a TutoringSession doc (by uid OR email OR app user id fields)
     function isStudentOfSession(resDoc) {
       return signedIn() && (
         resDoc.data.student_auth_uid == request.auth.uid ||
@@ -290,7 +282,6 @@ service cloud.firestore {
     // Messaging System (NO AI BOT)
     // ===========================
 
-    // ---- Role normalization (rules-side) ----
     function normRole(v) {
       return v == null ? "" :
         (
@@ -314,7 +305,6 @@ service cloud.firestore {
       );
     }
 
-    // Treat the special "support" id as support without requiring a /users doc.
     function roleOfUid(uid) {
       return uid == "support" ? "support" :
         (
@@ -328,7 +318,6 @@ service cloud.firestore {
       return (aRole == "user" && bRole == "school") || (aRole == "school" && bRole == "user");
     }
 
-    // ✅ FIXED: accept participants_map values that are NOT boolean true (ex: role strings)
     function docMentionsUid(d) {
       return signedIn() && (
         (d.participants is list && d.participants.hasAny([request.auth.uid])) ||
@@ -336,22 +325,17 @@ service cloud.firestore {
         (d.user_ids is list && d.user_ids.hasAny([request.auth.uid])) ||
         (d.members is list && d.members.hasAny([request.auth.uid])) ||
         (d.users is list && d.users.hasAny([request.auth.uid])) ||
-
-        // ✅ maps: just check key exists (value can be true OR role OR timestamp)
         (d.participants_map is map && d.participants_map[request.auth.uid] != null) ||
         (d.participantsMap is map && d.participantsMap[request.auth.uid] != null) ||
         (d.participants_by_uid is map && d.participants_by_uid[request.auth.uid] != null) ||
-
         (d.user_id is string && d.user_id == request.auth.uid) ||
         (d.owner_id is string && d.owner_id == request.auth.uid) ||
         (d.created_by is string && d.created_by == request.auth.uid) ||
         (d.createdBy is string && d.createdBy == request.auth.uid) ||
-
         (d.from_user_id is string && d.from_user_id == request.auth.uid) ||
         (d.to_user_id is string && d.to_user_id == request.auth.uid) ||
         (d.sender_id is string && d.sender_id == request.auth.uid) ||
         (d.senderId is string && d.senderId == request.auth.uid) ||
-
         (d.agent_id is string && d.agent_id == request.auth.uid) ||
         (d.tutor_id is string && d.tutor_id == request.auth.uid) ||
         (d.student_id is string && d.student_id == request.auth.uid)
@@ -402,7 +386,6 @@ service cloud.firestore {
               : null)));
     }
 
-    // ✅ Policy: Students/Users can NEVER message School directly.
     function pairAllowedByUids(aUid, bUid) {
       return !forbiddenUserSchoolPair(roleOfUid(aUid), roleOfUid(bUid));
     }
@@ -505,14 +488,10 @@ service cloud.firestore {
     }
 
     match /reports/{docId} {
-      // Allow any signed-in user to create a report ABOUT A CONVERSATION,
-      // but only if they are the reporter (supports both snake_case and camelCase fields).
       allow create: if signedIn() && (
         (request.resource.data.reporter_id == request.auth.uid) ||
         (request.resource.data.reporterId == request.auth.uid)
       );
-
-      // Only admins can view/triage reports
       allow read, update, delete: if isAdmin();
     }
 
@@ -562,9 +541,7 @@ service cloud.firestore {
 
       function isAgentOfStudent(studentId) {
         return signedIn() && (
-          // Manually-added client relationship
           exists(/databases/$(database)/documents/agent_students/$(request.auth.uid + "_" + studentId))
-          // OR referral-based assignment
           || (
             exists(/databases/$(database)/documents/users/$(studentId)) &&
             get(/databases/$(database)/documents/users/$(studentId)).data.referred_by_agent_id == request.auth.uid
@@ -705,9 +682,6 @@ service cloud.firestore {
       allow read, update, delete: if (signedIn() && resource.data.user_id == request.auth.uid) || isAdmin();
     }
 
-    // ==========================================
-    // ✅ Posts (NO PAYWALL): /Post (legacy)
-    // ==========================================
     match /Post/{docId} {
       allow read: if
         statusIs(resource.data, "published") ||
@@ -833,11 +807,6 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
-    // ============================
-    // Invites
-    // ============================
-    // Security model: invites are created/accepted/revoked ONLY via Cloud Functions
-    // (Admin SDK). Clients should not be able to read tokens or tamper with invites.
     match /invites/{inviteId} {
       allow read, write: if false;
     }
@@ -864,7 +833,6 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin() && validPromotion();
     }
 
-    // ===== ALIASES used by the app =====
     match /home_page_content/{docId} { allow read: if true; allow write: if isAdmin(); }
     match /home_page_contents/{docId} { allow read: if true; allow write: if isAdmin(); }
     match /ourTeam/{docId} { allow read: if true; allow write: if isAdmin(); }
@@ -873,9 +841,6 @@ service cloud.firestore {
     match /contact_page_contents/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
     match /contacts/{docId} { allow create: if true; allow read, update, delete: if isAdmin(); }
 
-    // ==========================================
-    // ✅ Posts (NO PAYWALL): /posts (main)
-    // ==========================================
     match /posts/{docId} {
       allow read: if
         statusIs(resource.data, "published") ||
@@ -896,10 +861,8 @@ service cloud.firestore {
     }
 
     match /events/{docId} {
-      // Public read: events are meant to be discoverable
       allow read: if true;
 
-      // Event ownership (support a few common field names to avoid breaking older docs)
       function isEventOwnerData(d) {
         return signedIn() && (
           (d.host_uid is string && d.host_uid == request.auth.uid) ||
@@ -910,13 +873,11 @@ service cloud.firestore {
       function isEventOwnerResource() { return isEventOwnerData(resource.data); }
       function isEventOwnerRequest()  { return isEventOwnerData(request.resource.data); }
 
-      // Minimal field validation for create/update (keeps the collection clean)
       function validPlatform(p) { return ["nasio","eventbrite"].hasAny([p]); }
       function validUrl(u) {
         return (u is string) && (u.size() > 10) && (u.matches('^https://.*'));
       }
 
-      // Role ↔ platform constraints
       function roleAllowsPlatform(p) {
         return
           (userHasType("school") && p == "eventbrite") ||
@@ -935,18 +896,12 @@ service cloud.firestore {
           roleAllowsPlatform(request.resource.data.platform) &&
           (request.resource.data.external_url is string) &&
           validUrl(request.resource.data.external_url) &&
-          // creator must own the event
           (request.resource.data.host_uid is string) &&
           (request.resource.data.host_uid == request.auth.uid);
       }
 
-      // ✅ Admin has full control
       allow create, update, delete: if isAdmin();
-
-      // ✅ Creators can create events for themselves (external-only)
       allow create: if isCreatorRole() && validEventWrite();
-
-      // ✅ Creators can update/delete only their own events
       allow update, delete: if isCreatorRole() && isEventOwnerResource() && isEventOwnerRequest() && validEventWrite();
     }
     match /faqs/{docId} { allow read: if true; allow write: if false; }
@@ -973,13 +928,8 @@ service cloud.firestore {
     match /schools/{docId} {
       allow read: if true;
 
-      // PROGRAM DOCS inside `schools`
-      // - school_id = institutions/{institutionUid}
-      // - user_id   = auth.uid
-      // - optional: record_type = "program"
       allow create: if signedIn() && (
         isAdmin() ||
-
         (
           request.resource.data.user_id == request.auth.uid &&
           request.resource.data.school_id is string &&
@@ -989,19 +939,16 @@ service cloud.firestore {
 
       allow update: if signedIn() && (
         isAdmin() ||
-
         (
           resource.data.user_id == request.auth.uid &&
           resource.data.school_id is string &&
           ownsInstitutionId(resource.data.school_id) &&
-          // prevent changing the school_id to something else
           (request.resource.data.school_id == null || request.resource.data.school_id == resource.data.school_id)
         )
       );
 
       allow delete: if signedIn() && (
         isAdmin() ||
-
         (
           resource.data.user_id == request.auth.uid &&
           resource.data.school_id is string &&
@@ -1038,57 +985,44 @@ service cloud.firestore {
 
       match /following/{creatorId} {
         allow get, list: if signedIn() && request.auth.uid == docId;
-        // Server-only: created by Cloud Functions on accepted follow requests
         allow create, update: if false;
         allow delete: if signedIn() && request.auth.uid == docId;
       }
 
       match /followers/{followerId} {
         allow get, list: if signedIn() && (request.auth.uid == docId || request.auth.uid == followerId || isAdmin());
-        // Server-only: created by Cloud Functions on accepted follow requests
         allow create, update: if false;
         allow delete: if signedIn() && (request.auth.uid == followerId || request.auth.uid == docId || isAdmin());
       }
-      // ---------- FOLLOW REQUESTS (Instagram-style) ----------
-      // A follow starts as a request:
-      // users/{followee}/follow_requests/{follower}
-      // Followee can accept/decline by updating status.
+
       match /follow_requests/{followerId} {
-        // Followee sees incoming requests; follower can read their own request doc (to show "Requested")
         allow get, list: if signedIn() && (request.auth.uid == docId || request.auth.uid == followerId || isAdmin());
 
-        // Follower creates a pending request under the followee
         allow create: if signedIn()
           && request.auth.uid == followerId
           && request.resource.data.follower_id == followerId
           && request.resource.data.followee_id == docId
           && request.resource.data.status == "pending";
 
-        // Followee accepts/declines
         allow update: if signedIn()
           && request.auth.uid == docId
           && request.resource.data.follower_id == followerId
           && request.resource.data.followee_id == docId
           && (request.resource.data.status == "accepted" || request.resource.data.status == "declined");
 
-        // Either side can cancel/delete the request
         allow delete: if signedIn() && (request.auth.uid == docId || request.auth.uid == followerId || isAdmin());
       }
 
-      // Outgoing requests mirror for sender UI (optional).
-      // users/{follower}/follow_requests_sent/{followee}
       match /follow_requests_sent/{followeeId} {
         allow get, list: if signedIn() && (request.auth.uid == docId || isAdmin());
-
-        // Allow sender to create/delete their own mirror doc (if your UI writes it).
-        // If you want this server-only, change these two lines to "if false;"
         allow create: if signedIn() && request.auth.uid == docId && request.resource.data.followee_id == followeeId;
         allow delete: if signedIn() && request.auth.uid == docId;
         allow update: if false;
       }
+
       match /feed/{postId} {
         allow get, list: if signedIn() && request.auth.uid == docId;
-        allow create, update, delete: if false; // server only
+        allow create, update, delete: if false;
       }
 
       match /notifications/{nid} {
@@ -1116,20 +1050,14 @@ service cloud.firestore {
     match /school_leads/{leadId} {
       allow create: if signedIn() && (
         isAdmin() ||
-
-        // school-owned lead
         (
           request.resource.data.school_owner_user_id is string &&
           request.resource.data.school_owner_user_id == request.auth.uid
         ) ||
-
-        // student-created lead
         (
           request.resource.data.student_id is string &&
           request.resource.data.student_id == request.auth.uid
         ) ||
-
-        // fallback legacy owner field
         (
           request.resource.data.user_id is string &&
           request.resource.data.user_id == request.auth.uid
@@ -1138,38 +1066,45 @@ service cloud.firestore {
 
       allow read: if signedIn() && (
         isAdmin() ||
-
         (
           resource.data.school_owner_user_id is string &&
           resource.data.school_owner_user_id == request.auth.uid
         ) ||
-
         (
           resource.data.student_id is string &&
           resource.data.student_id == request.auth.uid
         ) ||
-
         (
           resource.data.user_id is string &&
           resource.data.user_id == request.auth.uid
+        ) ||
+        (
+          resource.data.linked_agent_id is string &&
+          resource.data.linked_agent_id == request.auth.uid
         )
       );
 
       allow update: if signedIn() && (
         isAdmin() ||
-
         (
           resource.data.school_owner_user_id is string &&
           resource.data.school_owner_user_id == request.auth.uid
         ) ||
-
         (
           resource.data.user_id is string &&
           resource.data.user_id == request.auth.uid
+        ) ||
+        (
+          resource.data.linked_agent_id is string &&
+          resource.data.linked_agent_id == request.auth.uid
         )
       );
 
       allow delete: if isAdmin();
+    }
+
+    match /qr_scan_logs/{docId} {
+      allow read, write: if false;
     }
 
     match /services/{docId} {
@@ -1240,10 +1175,6 @@ service cloud.firestore {
       allow update, delete: if signedIn() && canWriteSession(resource);
     }
 
-        // ============================
-    // Tutor Planner
-    // ============================
-
     match /tutor_availability/{tutorUid} {
       allow read: if signedIn() && (
         request.auth.uid == tutorUid ||
@@ -1273,22 +1204,14 @@ service cloud.firestore {
       );
     }
 
-        // ===============================
-    // COLLABORATOR REFERRALS
-    // ===============================
     match /collaborator_referrals/{referralId} {
       allow read: if signedIn() && (
         isAdmin() ||
         resource.data.collaborator_uid == request.auth.uid
       );
-
-      // Created/updated by Cloud Functions / Admin SDK
       allow create, update, delete: if false;
     }
 
-    // ===============================
-    // COLLABORATOR PAYOUTS
-    // ===============================
     match /collaborator_payouts/{payoutId} {
       allow read: if signedIn() && (
         isAdmin() ||
@@ -1300,7 +1223,6 @@ service cloud.firestore {
         request.resource.data.status == "pending";
 
       allow update: if signedIn() && isAdmin();
-
       allow delete: if signedIn() && isAdmin();
     }
 
@@ -1376,87 +1298,145 @@ service cloud.firestore {
 
     match /translations_public/{docId} {
       allow read: if true;
-      allow write: if false; // only server (Admin SDK) writes
+      allow write: if false;
     }
 
-
     match /tutor_students/{relId} {
-      // Tutor ↔ Student relationship
-      // Doc shape: { tutor_id: string, student_id: string, ... }
-
       function myAppUserId() {
         return exists(/databases/$(database)/documents/users/$(request.auth.uid))
           && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.id is string)
           ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.id
           : "";
+      }
+
+      function resTutorId() {
+        return resource.data.tutor_id != null
+          ? resource.data.tutor_id
+          : resource.data.tutorId;
+      }
+
+      function reqTutorId() {
+        return request.resource.data.tutor_id != null
+          ? request.resource.data.tutor_id
+          : request.resource.data.tutorId;
+      }
+
+      function resStudentId() {
+        return resource.data.student_id != null
+          ? resource.data.student_id
+          : resource.data.studentId;
+      }
+
+      function reqStudentId() {
+        return request.resource.data.student_id != null
+          ? request.resource.data.student_id
+          : request.resource.data.studentId;
       }
 
       function isTutorOwner() {
         return signedIn() && (
-          resource.data.tutor_id == request.auth.uid ||
-          (myAppUserId() != "" && resource.data.tutor_id == myAppUserId())
+          resTutorId() == request.auth.uid ||
+          (myAppUserId() != "" && resTutorId() == myAppUserId())
         );
       }
 
-      allow create: if signedIn()
-        && (
-          request.resource.data.tutor_id == request.auth.uid ||
-          (myAppUserId() != "" && request.resource.data.tutor_id == myAppUserId())
-        )
-        && request.resource.data.student_id is string;
+      function isStudentLinked() {
+        return signedIn() && (
+          resStudentId() == request.auth.uid ||
+          (myAppUserId() != "" && resStudentId() == myAppUserId())
+        );
+      }
 
-      allow read: if signedIn()
-        && (isTutorOwner()
-            || resource.data.student_id == request.auth.uid
-            || isAdmin());
+      allow create: if signedIn() && (
+        isAdmin() ||
+        reqTutorId() == request.auth.uid ||
+        (myAppUserId() != "" && reqTutorId() == myAppUserId())
+      ) && reqStudentId() is string;
 
-      // Update: tutor owner only, and cannot change tutor_id/student_id
-      allow update: if isTutorOwner()
-        && request.resource.data.tutor_id == resource.data.tutor_id
-        && request.resource.data.student_id == resource.data.student_id;
+      allow read: if signedIn() && (
+        isAdmin() ||
+        isTutorOwner() ||
+        isStudentLinked()
+      );
 
-      // Delete: tutor owner (no request.resource.data)
-      allow delete: if isTutorOwner() || isAdmin();
+      allow update: if signedIn() && (
+        isAdmin() ||
+        isTutorOwner()
+      ) && reqTutorId() == resTutorId()
+        && reqStudentId() == resStudentId();
+
+      allow delete: if signedIn() && (
+        isAdmin() ||
+        isTutorOwner()
+      );
     }
 
-
-    match /agent_students/{relId} {
-      // Agent ↔ Student (Client) relationship
-      // Doc shape: { agent_id: string, student_id: string, ... }
-
-      function myAppUserId() {
-        return exists(/databases/$(database)/documents/users/$(request.auth.uid))
-          && (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.id is string)
-          ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.id
-          : "";
-      }
-
-      function isAgentOwner() {
-        return signedIn() && (
-          resource.data.agent_id == request.auth.uid ||
-          (myAppUserId() != "" && resource.data.agent_id == myAppUserId())
-        );
-      }
-
-      allow create: if signedIn()
-        && (
-          request.resource.data.agent_id == request.auth.uid ||
-          (myAppUserId() != "" && request.resource.data.agent_id == myAppUserId())
+    match /agent_clients/{relId} {
+      allow create: if signedIn() && (
+        isAdmin() ||
+        (
+          (
+            request.resource.data.agent_id is string &&
+            request.resource.data.agent_id == request.auth.uid
+          ) ||
+          (
+            request.resource.data.agentId is string &&
+            request.resource.data.agentId == request.auth.uid
+          )
         )
-        && request.resource.data.student_id is string;
+      );
 
-      allow read: if signedIn()
-        && (isAgentOwner()
-            || resource.data.student_id == request.auth.uid
-            || isAdmin());
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        ) ||
+        (
+          resource.data.student_id is string &&
+          resource.data.student_id == request.auth.uid
+        ) ||
+        (
+          resource.data.studentId is string &&
+          resource.data.studentId == request.auth.uid
+        ) ||
+        (
+          resource.data.client_id is string &&
+          resource.data.client_id == request.auth.uid
+        ) ||
+        (
+          resource.data.clientId is string &&
+          resource.data.clientId == request.auth.uid
+        )
+      );
 
-      // Update: agent owner only, and cannot change agent_id/student_id
-      allow update: if isAgentOwner()
-        && request.resource.data.agent_id == resource.data.agent_id
-        && request.resource.data.student_id == resource.data.student_id;
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        )
+      );
 
-      // Delete: agent owner (no request.resource.data)
-      allow delete: if isAgentOwner() || isAdmin();
+      allow delete: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        )
+      );
     }
 
     match /tutor_availability/{docId} {
@@ -1488,155 +1468,171 @@ service cloud.firestore {
       );
     }
 
-    // final catch-all
-
     // ✅ Agent document checklist per client
     // Collection: agent_client_checklists/{agentId}_{clientId}
-    // Fields: { agent_id, client_id, documents: [{id,name,submitted,...}], ... }
+    // Fields: { agent_id/client_id OR agentId/clientId, documents: [{id,name,submitted,...}], ... }
     match /agent_client_checklists/{docId} {
       allow create: if signedIn() && (
-        request.resource.data.agent_id == request.auth.uid || isAdmin()
+        isAdmin() ||
+        (
+          request.resource.data.agent_id is string &&
+          request.resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          request.resource.data.agentId is string &&
+          request.resource.data.agentId == request.auth.uid
+        )
       );
 
       allow read: if signedIn() && (
-        resource.data.agent_id == request.auth.uid ||
-        resource.data.client_id == request.auth.uid ||
-        isAdmin()
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        ) ||
+        (
+          resource.data.client_id is string &&
+          resource.data.client_id == request.auth.uid
+        ) ||
+        (
+          resource.data.clientId is string &&
+          resource.data.clientId == request.auth.uid
+        )
       );
 
-      allow update, delete: if signedIn() && (
-        resource.data.agent_id == request.auth.uid || isAdmin()
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        )
+      );
+
+      allow delete: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.agent_id is string &&
+          resource.data.agent_id == request.auth.uid
+        ) ||
+        (
+          resource.data.agentId is string &&
+          resource.data.agentId == request.auth.uid
+        )
       );
     }
 
-    
-/* ===============================
-   ORGANIZATIONS (Team seats)
-   - org owner/admin manages org
-   - baseSlots=5 free, extraSlots paid
-   - usedSlots increments when members join
-   =============================== */
+    /* ===============================
+       ORGANIZATIONS (Team seats)
+       =============================== */
 
-function orgRef(orgId) {
-  return /databases/$(database)/documents/organizations/$(orgId);
-}
+    function orgRef(orgId) {
+      return /databases/$(database)/documents/organizations/$(orgId);
+    }
 
-function orgExists(orgId) {
-  return orgId is string && exists(orgRef(orgId));
-}
+    function orgExists(orgId) {
+      return orgId is string && exists(orgRef(orgId));
+    }
 
-function isOrgOwner(orgId) {
-  return signedIn() && orgExists(orgId) && get(orgRef(orgId)).data.ownerId == request.auth.uid;
-}
+    function isOrgOwner(orgId) {
+      return signedIn() && orgExists(orgId) && get(orgRef(orgId)).data.ownerId == request.auth.uid;
+    }
 
-function isOrgMember(orgId) {
-  // membership doc id is deterministic: {orgId}_{uid}
-  return signedIn()
-    && (orgId is string)
-    && exists(/databases/$(database)/documents/organization_members/$(orgId + "_" + request.auth.uid));
-}
+    function isOrgMember(orgId) {
+      return signedIn()
+        && (orgId is string)
+        && exists(/databases/$(database)/documents/organization_members/$(orgId + "_" + request.auth.uid));
+    }
 
-function canUseOrgFeature() {
-  // Subscription gate: only applies to school/agent/tutor when subscription mode is enabled
-  // subscription doc: app_config/subscription { enabled: true/false }
-  // if not enabled, allow.
-  // if enabled, require user doc subscribed==true (or subscription_active==true)
-  return signedIn() && (
-    !exists(/databases/$(database)/documents/app_config/subscription) ||
-    get(/databases/$(database)/documents/app_config/subscription).data.enabled != true ||
-    !(userHasType("school") || userHasType("agent") || userHasType("tutor")) ||
-    (
-      exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-      (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscribed == true ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscription_active == true ||
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscriptionActive == true
-      )
-    )
-  );
-}
+    function canUseOrgFeature() {
+      return signedIn() && (
+        !exists(/databases/$(database)/documents/app_config/subscription) ||
+        get(/databases/$(database)/documents/app_config/subscription).data.enabled != true ||
+        !(userHasType("school") || userHasType("agent") || userHasType("tutor")) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscribed == true ||
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscription_active == true ||
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.subscriptionActive == true
+          )
+        )
+      );
+    }
 
-match /organizations/{orgId} {
-  // Read: admin, owner, or member.
-  // IMPORTANT: use resource.data.ownerId to avoid recursive get() calls.
-  allow read: if signedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid || isOrgMember(orgId));
+    match /organizations/{orgId} {
+      allow read: if signedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid || isOrgMember(orgId));
 
-  // Create org: school/agent/tutor (gated) or admin. OwnerId must be caller.
-  allow create: if signedIn()
-    && canUseOrgFeature()
-    && (isAdmin() || userHasType("school") || userHasType("agent") || userHasType("tutor"))
-    && request.resource.data.ownerId == request.auth.uid
-    && request.resource.data.baseSlots == 5
-    && request.resource.data.extraSlots == 0
-    && request.resource.data.usedSlots >= 0;
+      allow create: if signedIn()
+        && canUseOrgFeature()
+        && (isAdmin() || userHasType("school") || userHasType("agent") || userHasType("tutor"))
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.baseSlots == 5
+        && request.resource.data.extraSlots == 0
+        && request.resource.data.usedSlots >= 0;
 
-  // Update org: owner/admin only. Prevent lowering usedSlots below current.
-  allow update: if signedIn()
-    && (isAdmin() || resource.data.ownerId == request.auth.uid)
-    && request.resource.data.ownerId == resource.data.ownerId
-    && request.resource.data.usedSlots >= resource.data.usedSlots;
+      allow update: if signedIn()
+        && (isAdmin() || resource.data.ownerId == request.auth.uid)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.usedSlots >= resource.data.usedSlots;
 
-  allow delete: if signedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
-}
+      allow delete: if signedIn() && (isAdmin() || resource.data.ownerId == request.auth.uid);
+    }
 
-match /organization_members/{memberId} {
-  function memberOrgId() { return resource.data.orgId; }
-  function newMemberOrgId() { return request.resource.data.orgId; }
+    match /organization_members/{memberId} {
+      function memberOrgId() { return resource.data.orgId; }
+      function newMemberOrgId() { return request.resource.data.orgId; }
 
-  // Read: admin/owner OR any member in the same org (so members can see the roster)
-  allow read: if signedIn() && (
-    isAdmin() ||
-    (resource.data.orgId is string && (isOrgOwner(resource.data.orgId) || isOrgMember(resource.data.orgId)))
-  );
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (resource.data.orgId is string && (isOrgOwner(resource.data.orgId) || isOrgMember(resource.data.orgId)))
+      );
 
-  // Client create: only when creating org owner member (the initial addDoc)
-  // This is needed because org creation currently adds owner member from frontend.
-  allow create: if signedIn()
-    && canUseOrgFeature()
-    && request.resource.data.userId == request.auth.uid
-    && request.resource.data.role == "owner"
-    && request.resource.data.orgId is string
-    && isOrgOwner(request.resource.data.orgId);
+      allow create: if signedIn()
+        && canUseOrgFeature()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.role == "owner"
+        && request.resource.data.orgId is string
+        && isOrgOwner(request.resource.data.orgId);
 
-  // All other member writes are server-only (accept invite runs in Cloud Function)
-  allow update, delete: if false;
-}
+      allow update, delete: if false;
+    }
 
-// ===============================
-// ORG INVITES (server writes only)
-// ===============================
-match /org_invites/{inviteId} {
-  allow read: if signedIn() && (
-    isAdmin() ||
-    (resource.data.orgId is string && isOrgOwner(resource.data.orgId))
-  );
-  allow create, update, delete: if false;
-}
+    match /org_invites/{inviteId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (resource.data.orgId is string && isOrgOwner(resource.data.orgId))
+      );
+      allow create, update, delete: if false;
+    }
 
-  match /profile_reviews/{reviewId} {
-    allow read: if true;
+    match /profile_reviews/{reviewId} {
+      allow read: if true;
 
-    allow create: if signedIn()
-      && request.resource.data.author_id == request.auth.uid
-      && request.resource.data.target_user_id is string
-      && request.resource.data.target_role in ["agent", "tutor"]
-      && request.resource.data.author_name is string
-      && request.resource.data.comment is string
-      && request.resource.data.comment.size() > 0
-      && request.resource.data.comment.size() <= 2000
-      && request.resource.data.rating is number
-      && request.resource.data.rating >= 1
-      && request.resource.data.rating <= 5;
+      allow create: if signedIn()
+        && request.resource.data.author_id == request.auth.uid
+        && request.resource.data.target_user_id is string
+        && request.resource.data.target_role in ["agent", "tutor"]
+        && request.resource.data.author_name is string
+        && request.resource.data.comment is string
+        && request.resource.data.comment.size() > 0
+        && request.resource.data.comment.size() <= 2000
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5;
 
-    allow update, delete: if signedIn() && (
-      resource.data.author_id == request.auth.uid || isAdmin()
-    );
-  }
+      allow update, delete: if signedIn() && (
+        resource.data.author_id == request.auth.uid || isAdmin()
+      );
+    }
 
-
-    // ===============================
-    // TUTOR PLANNER
-    // ===============================
     match /tutor_availability/{docId} {
       allow read: if signedIn() && (
         docId == request.auth.uid ||
@@ -1678,9 +1674,6 @@ match /org_invites/{inviteId} {
       );
     }
 
-
-
     match /{document=**} { allow read, write: if false; }
   }
-
 }

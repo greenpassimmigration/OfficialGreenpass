@@ -1,5 +1,6 @@
 // src/pages/MyStudents.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,8 @@ import {
   ClipboardList,
   MessageSquare,
   Trash2,
+  ScanLine,
+  Camera,
 } from "lucide-react";
 import { createPageUrl } from "@/utils";
 
@@ -32,20 +35,19 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 
+// QR
+import { Html5Qrcode } from "html5-qrcode";
+
 /**
  * AGENT-ONLY PAGE (My Clients)
- * - Client list = referred users + agent_students relationship
+ * - Client list = referred users + agent_clients relationship
  * - Document checklist per client stored in: agent_client_checklists/{agentId}_{clientId}
- *
- * ACTIONS:
- * - Message: navigates to Messages?to=<clientId>
- * - Remove: removes ONLY manually-added clients (agent_students). Referred clients can't be removed here.
- *   Also deletes the checklist for that client for cleanliness.
+ * - QR scanner for agent:
+ *    scan student QR -> calls backend acceptStudentReferralToAgent -> student added to agent list
  */
 
 const CHECKLIST_COLLECTION = "agent_client_checklists";
 
-// Firestore "in" supports max 10 items
 const chunk = (arr, size = 10) => {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -67,7 +69,6 @@ const defaultDocTemplate = () => [
   { name: "Photos (passport size)" },
 ];
 
-// Simple id generator without deps
 const cryptoRandomId = () => {
   try {
     if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -132,18 +133,64 @@ function Modal({ open, title, onClose, children }) {
   );
 }
 
+function getFunctionsBase() {
+  const fromEnv =
+    import.meta.env.VITE_FUNCTIONS_BASE ||
+    import.meta.env.VITE_FUNCTIONS_HTTP_BASE ||
+    import.meta.env.VITE_FUNCTIONS_BASE_URL ||
+    import.meta.env.VITE_CLOUD_FUNCTIONS_BASE_URL ||
+    "";
+
+  if (fromEnv) return String(fromEnv).replace(/\/+$/, "");
+
+  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  if (projectId) {
+    return `https://us-central1-${projectId}.cloudfunctions.net`;
+  }
+
+  return "https://us-central1-greenpass-dc92d.cloudfunctions.net";
+}
+
+function extractStudentRefFromScannedText(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+
+  try {
+    const url = new URL(text);
+    return (
+      url.searchParams.get("student_ref") ||
+      url.searchParams.get("ref") ||
+      ""
+    ).trim();
+  } catch {
+    return text;
+  }
+}
+
 export default function MyStudents() {
   const [clients, setClients] = useState([]);
-  const [manualClientIds, setManualClientIds] = useState(new Set());
+  const [removableClientIds, setRemovableClientIds] = useState(new Set());
   const [checklistsByClient, setChecklistsByClient] = useState({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [errorText, setErrorText] = useState("");
-
+  const [searchParams] = useSearchParams();
   const [docsOpen, setDocsOpen] = useState(false);
   const [activeClient, setActiveClient] = useState(null);
   const [docsSaving, setDocsSaving] = useState(false);
   const [docName, setDocName] = useState("");
+
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerStarting, setScannerStarting] = useState(false);
+  const [scannerBusy, setScannerBusy] = useState(false);
+  const [scannerError, setScannerError] = useState("");
+  const [scannerSuccess, setScannerSuccess] = useState("");
+  const [manualQrValue, setManualQrValue] = useState("");
+  const [cameraSupported, setCameraSupported] = useState(true);
+
+  const qrRegionIdRef = useRef(`agent-student-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const qrScannerRef = useRef(null);
+  const handledTokenRef = useRef("");
 
   const openDocs = (client) => {
     setActiveClient(client);
@@ -286,12 +333,281 @@ export default function MyStudents() {
     window.location.href = createPageUrl(`Messages?to=${clientId}`);
   };
 
+  const fetchData = async () => {
+    setLoading(true);
+    setErrorText("");
+
+    try {
+      const auth = getAuth();
+      const me = auth.currentUser;
+
+      if (!me) {
+        setClients([]);
+        setRemovableClientIds(new Set());
+        setChecklistsByClient({});
+        setLoading(false);
+        return;
+      }
+
+      const referralQueries = [
+        query(collection(db, "users"), where("referredByAgentId", "==", me.uid)),
+        query(collection(db, "users"), where("assigned_agent_id", "==", me.uid)),
+        query(collection(db, "users"), where("referred_by_agent_id", "==", me.uid)),
+      ];
+
+      const referralSnapshots = await Promise.all(
+        referralQueries.map((qRef) =>
+          getDocs(qRef).catch((err) => {
+            console.error("Referral query failed:", err);
+            return { docs: [] };
+          })
+        )
+      );
+
+      const referredDocs = referralSnapshots
+        .flatMap((snap) => snap.docs || [])
+        .map((d) => ({ id: d.id, ...d.data() }));
+
+      const agentClientQueries = [
+        query(collection(db, "agent_clients"), where("agentId", "==", me.uid)),
+        query(collection(db, "agent_clients"), where("agent_id", "==", me.uid)),
+      ];
+
+      const agentClientSnapshots = await Promise.all(
+        agentClientQueries.map((qRef) =>
+          getDocs(qRef).catch((err) => {
+            console.error("agent_clients query failed:", err);
+            return { docs: [] };
+          })
+        )
+      );
+
+      const qrClientIds = agentClientSnapshots
+        .flatMap((snap) => snap.docs || [])
+        .map((d) => {
+          const data = d.data() || {};
+          return data.studentId || data.student_id || data.clientId || data.client_id || null;
+        })
+        .filter(Boolean);
+
+      const removableIds = new Set(qrClientIds);
+      setRemovableClientIds(removableIds);
+
+      const relationUserIds = Array.from(new Set(qrClientIds));
+      const relationUsers = [];
+
+      if (relationUserIds.length) {
+        for (const batch of chunk(relationUserIds, 10)) {
+          const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
+          const usersSnap = await getDocs(usersQ);
+          usersSnap.docs.forEach((u) => relationUsers.push({ id: u.id, ...u.data() }));
+        }
+      }
+
+      const merged = [...referredDocs, ...relationUsers];
+      const seen = new Set();
+      const clientDocs = merged.filter((u) => {
+        if (!u?.id) return false;
+        if (seen.has(u.id)) return false;
+        seen.add(u.id);
+        return true;
+      });
+
+      setClients(clientDocs);
+
+      const map = {};
+      const checklistQueries = [
+        query(collection(db, CHECKLIST_COLLECTION), where("agent_id", "==", me.uid)),
+        query(collection(db, CHECKLIST_COLLECTION), where("agentId", "==", me.uid)),
+      ];
+
+      const checklistSnapshots = await Promise.all(
+        checklistQueries.map((qRef) =>
+          getDocs(qRef).catch((err) => {
+            console.error("Checklist query failed:", err);
+            return { docs: [] };
+          })
+        )
+      );
+
+      checklistSnapshots.forEach((snap) => {
+        (snap.docs || []).forEach((d) => {
+          const data = d.data() || {};
+          const cid = data.client_id || data.clientId;
+          if (!cid) return;
+          map[cid] = Array.isArray(data.documents) ? data.documents : [];
+        });
+      });
+
+      setChecklistsByClient(map);
+    } catch (err) {
+      console.error("Error fetching clients/checklists:", err);
+      setErrorText(err?.message || "Failed to load clients.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const stopScanner = async () => {
+    try {
+      const scanner = qrScannerRef.current;
+      if (scanner) {
+        const state = scanner.getState?.();
+        if (state === 2 || state === 3) {
+          await scanner.stop().catch(() => {});
+        }
+        await scanner.clear().catch(() => {});
+      }
+    } catch {}
+    qrScannerRef.current = null;
+  };
+
+  const closeScanner = async () => {
+    await stopScanner();
+    setScannerOpen(false);
+    setScannerStarting(false);
+    setScannerBusy(false);
+    setScannerError("");
+    setScannerSuccess("");
+    setManualQrValue("");
+    handledTokenRef.current = "";
+  };
+
+  const handleAcceptStudentQr = async (rawValue) => {
+    const token = extractStudentRefFromScannedText(rawValue);
+    if (!token) {
+      setScannerError("Could not read a valid student QR token.");
+      return;
+    }
+
+    if (scannerBusy) return;
+    if (handledTokenRef.current === token) return;
+
+    handledTokenRef.current = token;
+    setScannerBusy(true);
+    setScannerError("");
+    setScannerSuccess("");
+
+    try {
+      const auth = getAuth();
+      const me = auth.currentUser;
+      if (!me) throw new Error("You must be signed in.");
+
+      const idToken = await me.getIdToken();
+      const base = getFunctionsBase();
+
+      const res = await fetch(`${base}/acceptStudentReferralToAgent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          student_ref: token,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to add student.");
+      }
+
+      let successText = "Student added successfully.";
+      if (data?.alreadyExists) {
+        successText = "Student is already in your client list.";
+      } else if (data?.student?.full_name) {
+        successText = `${data.student.full_name} added to your client list.`;
+      }
+
+      if (data?.assignmentLocked) {
+        successText += " Existing assigned agent was not changed.";
+      }
+
+      setScannerSuccess(successText);
+      await fetchData();
+
+      setTimeout(() => {
+        closeScanner();
+      }, 900);
+    } catch (e) {
+      console.error("acceptStudentReferralToAgent failed:", e);
+      handledTokenRef.current = "";
+      setScannerError(e?.message || "Failed to add student.");
+    } finally {
+      setScannerBusy(false);
+    }
+  };
+
+  const startScanner = async () => {
+    setScannerOpen(true);
+    setScannerStarting(true);
+    setScannerError("");
+    setScannerSuccess("");
+    handledTokenRef.current = "";
+
+    setTimeout(async () => {
+      try {
+        const hasCamera =
+          typeof navigator !== "undefined" &&
+          !!navigator.mediaDevices &&
+          typeof navigator.mediaDevices.getUserMedia === "function";
+
+        if (!hasCamera) {
+          setCameraSupported(false);
+          setScannerError("Camera is not supported on this browser/device. Paste the QR token or link below.");
+          return;
+        }
+
+        setCameraSupported(true);
+
+        await stopScanner();
+
+        const scanner = new Html5Qrcode(qrRegionIdRef.current);
+        qrScannerRef.current = scanner;
+
+        const config = {
+          fps: 10,
+          qrbox: { width: 240, height: 240 },
+          aspectRatio: 1.7778,
+          rememberLastUsedCamera: true,
+        };
+
+        const onScan = async (decodedText) => {
+          await handleAcceptStudentQr(decodedText);
+        };
+
+        try {
+          // Mobile/back camera first
+          await scanner.start({ facingMode: { exact: "environment" } }, config, onScan, () => {});
+        } catch {
+          try {
+            // Laptop/front camera fallback
+            await scanner.start({ facingMode: "user" }, config, onScan, () => {});
+          } catch {
+            // Any available camera fallback
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras || !cameras.length) {
+              throw new Error("No camera found on this device.");
+            }
+            await scanner.start(cameras[0].id, config, onScan, () => {});
+          }
+        }
+      } catch (e) {
+        console.error("Scanner start failed:", e);
+        setScannerError(e?.message || "Could not access the camera. You can paste the QR token or link below.");
+      } finally {
+        setScannerStarting(false);
+      }
+    }, 250);
+  };
+
   const handleRemoveClient = async (client) => {
     const auth = getAuth();
     const me = auth.currentUser;
     if (!me || !client?.id) return;
 
-    if (!manualClientIds.has(client.id)) return;
+    if (!removableClientIds.has(client.id)) return;
 
     const ok = window.confirm(
       `Remove ${client.full_name || client.email || "this client"} from your client list?`
@@ -299,14 +615,16 @@ export default function MyStudents() {
     if (!ok) return;
 
     try {
-      await deleteDoc(doc(db, "agent_students", makeRelId(me.uid, client.id)));
+      await Promise.allSettled([
+        deleteDoc(doc(db, "agent_clients", makeRelId(me.uid, client.id))),
+      ]);
 
       try {
         await deleteDoc(doc(db, CHECKLIST_COLLECTION, makeRelId(me.uid, client.id)));
       } catch {}
 
       setClients((prev) => prev.filter((c) => c.id !== client.id));
-      setManualClientIds((prev) => {
+      setRemovableClientIds((prev) => {
         const next = new Set(Array.from(prev));
         next.delete(client.id);
         return next;
@@ -323,96 +641,29 @@ export default function MyStudents() {
   };
 
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      setErrorText("");
+    fetchData();
+  }, []);
 
+  useEffect(() => {
+    const studentRef = searchParams.get("student_ref");
+    if (!studentRef) return;
+
+    const process = async () => {
       try {
-        const auth = getAuth();
-        const me = auth.currentUser;
-
-        if (!me) {
-          setClients([]);
-          setManualClientIds(new Set());
-          setChecklistsByClient({});
-          setLoading(false);
-          return;
-        }
-
-        // 1) Clients via referral fields on users
-        const referralQueries = [
-          query(collection(db, "users"), where("referredByAgentId", "==", me.uid)),
-          query(collection(db, "users"), where("assigned_agent_id", "==", me.uid)),
-          query(collection(db, "users"), where("referred_by_agent_id", "==", me.uid)),
-        ];
-
-        const referralSnapshots = await Promise.all(
-          referralQueries.map((qRef) =>
-            getDocs(qRef).catch((err) => {
-              console.error("Referral query failed:", err);
-              return { docs: [] };
-            })
-          )
-        );
-
-        const referredDocs = referralSnapshots
-          .flatMap((snap) => snap.docs || [])
-          .map((d) => ({ id: d.id, ...d.data() }));
-
-        // 2) Clients manually added via agent_students
-        const relQ = query(collection(db, "agent_students"), where("agent_id", "==", me.uid));
-        const relSnap = await getDocs(relQ);
-
-        const relClientIds = relSnap.docs
-          .map((d) => d.data()?.student_id)
-          .filter(Boolean);
-
-        setManualClientIds(new Set(relClientIds));
-
-        const relUsers = [];
-        if (relClientIds.length) {
-          const uniqueIds = Array.from(new Set(relClientIds));
-          for (const batch of chunk(uniqueIds, 10)) {
-            const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
-            const usersSnap = await getDocs(usersQ);
-            usersSnap.docs.forEach((u) => relUsers.push({ id: u.id, ...u.data() }));
-          }
-        }
-
-        // Merge and dedupe
-        const merged = [...referredDocs, ...relUsers];
-        const seen = new Set();
-        const clientDocs = merged.filter((u) => {
-          if (!u?.id) return false;
-          if (seen.has(u.id)) return false;
-          seen.add(u.id);
-          return true;
-        });
-
-        setClients(clientDocs);
-
-        // 3) Fetch all checklists for this agent
-        const checklistQ = query(collection(db, CHECKLIST_COLLECTION), where("agent_id", "==", me.uid));
-        const checklistSnap = await getDocs(checklistQ);
-        const map = {};
-
-        checklistSnap.docs.forEach((d) => {
-          const data = d.data() || {};
-          const cid = data.client_id;
-          if (!cid) return;
-          map[cid] = Array.isArray(data.documents) ? data.documents : [];
-        });
-
-        setChecklistsByClient(map);
+        await handleAcceptStudentQr(studentRef);
+        window.history.replaceState({}, "", "/MyStudents");
       } catch (err) {
-        console.error("Error fetching clients/checklists:", err);
-        setErrorText(err?.message || "Failed to load clients.");
-      } finally {
-        setLoading(false);
+        console.error(err);
       }
     };
 
-    fetchData();
+    process();
+  }, [searchParams]);
+
+  useEffect(() => {
+    return () => {
+      stopScanner();
+    };
   }, []);
 
   const filteredClients = useMemo(() => {
@@ -440,11 +691,18 @@ export default function MyStudents() {
   return (
     <div className="p-4 sm:p-6">
       <div className="flex items-center justify-between gap-3 mb-6">
-        <h1 className="text-2xl sm:text-3xl font-bold">My Clients</h1>
-        <div className="hidden sm:flex items-center gap-2 text-sm text-gray-600">
-          <ClipboardList className="h-4 w-4" />
-          Track required documents per client
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold">My Clients</h1>
+          <div className="mt-2 hidden sm:flex items-center gap-2 text-sm text-gray-600">
+            <ClipboardList className="h-4 w-4" />
+            Track required documents per client
+          </div>
         </div>
+
+        <Button type="button" className="rounded-xl" onClick={startScanner}>
+          <ScanLine className="h-4 w-4 mr-2" />
+          Scan Student QR
+        </Button>
       </div>
 
       {errorText ? (
@@ -483,7 +741,7 @@ export default function MyStudents() {
 
               <TableBody>
                 {filteredClients.map((client) => {
-                  const isManual = manualClientIds.has(client.id);
+                  const isRemovable = removableClientIds.has(client.id);
 
                   return (
                     <TableRow key={client.id}>
@@ -535,9 +793,9 @@ export default function MyStudents() {
                             variant="outline"
                             size="sm"
                             className="rounded-xl"
-                            disabled={!isManual}
+                            disabled={!isRemovable}
                             title={
-                              isManual
+                              isRemovable
                                 ? "Remove from your client list"
                                 : "Referred clients can't be removed here"
                             }
@@ -557,7 +815,7 @@ export default function MyStudents() {
 
           <div className="md:hidden grid grid-cols-1 gap-4">
             {filteredClients.map((client) => {
-              const isManual = manualClientIds.has(client.id);
+              const isRemovable = removableClientIds.has(client.id);
 
               return (
                 <Card key={client.id} className="p-4 rounded-2xl">
@@ -596,9 +854,9 @@ export default function MyStudents() {
                         variant="outline"
                         size="sm"
                         className="rounded-xl"
-                        disabled={!isManual}
+                        disabled={!isRemovable}
                         title={
-                          isManual
+                          isRemovable
                             ? "Remove from your client list"
                             : "Referred clients can't be removed here"
                         }
@@ -741,6 +999,91 @@ export default function MyStudents() {
             ) : null}
           </div>
         )}
+      </Modal>
+
+      <Modal open={scannerOpen} onClose={() => closeScanner()} title="Scan Student QR">
+        <div className="space-y-4">
+          <div className="text-sm text-gray-600">
+            Scan the student QR using your camera, or paste the student QR link/token manually.
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border bg-black">
+            <div className="relative aspect-video w-full">
+              <div id={qrRegionIdRef.current} className="h-full w-full" />
+
+              {!cameraSupported ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 bg-black/70 px-4 text-center">
+                  <Camera className="h-8 w-8 mb-3" />
+                  <div className="text-sm">Live camera QR scan is not supported here.</div>
+                  <div className="text-xs text-white/70 mt-1">
+                    Use the manual token/link input below.
+                  </div>
+                </div>
+              ) : null}
+
+              {scannerStarting ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting camera…
+                  </div>
+                </div>
+              ) : null}
+
+              {scannerBusy ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Adding student…
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {scannerError ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {scannerError}
+            </div>
+          ) : null}
+
+          {scannerSuccess ? (
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+              {scannerSuccess}
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Manual QR token / link</label>
+            <div className="flex gap-2">
+              <Input
+                className="rounded-xl"
+                placeholder="Paste student_ref link or token here..."
+                value={manualQrValue}
+                onChange={(e) => setManualQrValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && manualQrValue.trim()) {
+                    handleAcceptStudentQr(manualQrValue);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                className="rounded-xl"
+                disabled={scannerBusy || !manualQrValue.trim()}
+                onClick={() => handleAcceptStudentQr(manualQrValue)}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" className="rounded-xl" onClick={() => closeScanner()}>
+              Close
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

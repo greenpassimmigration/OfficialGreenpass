@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, FileCheck2, ShieldCheck } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -66,10 +66,29 @@ const POLICY_LINKS = {
   },
 };
 
+function buildStudentScanUrl(studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return createPageUrl("Dashboard");
+  return `/scan/student?student_ref=${encodeURIComponent(token)}`;
+}
+
+function buildPolicyLinkWithStudentRef(href, studentRef) {
+  const token = String(studentRef || "").trim();
+  if (!token) return href;
+
+  const separator = href.includes("?") ? "&" : "?";
+  return `${href}${separator}student_ref=${encodeURIComponent(token)}`;
+}
+
 export default function PolicyCenter() {
   const { loading, acceptPolicies } = usePolicyAcceptance();
+  const [params] = useSearchParams();
   const [acceptedAll, setAcceptedAll] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const studentRef =
+    (params.get("student_ref") || "").trim() ||
+    (typeof window !== "undefined" ? localStorage.getItem("gp_student_ref") || "" : "");
 
   const requiredItems = useMemo(
     () =>
@@ -92,7 +111,7 @@ export default function PolicyCenter() {
     setSaving(true);
     try {
       await acceptPolicies(REQUIRED_POLICIES);
-      window.location.assign(createPageUrl("Dashboard"));
+      window.location.assign(buildStudentScanUrl(studentRef));
     } finally {
       setSaving(false);
     }
@@ -124,6 +143,13 @@ export default function PolicyCenter() {
               </p>
             </div>
           </div>
+
+          {studentRef && (
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+              You scanned a student QR earlier. After accepting these policies, GreenPass will
+              continue that student connection automatically.
+            </div>
+          )}
         </CardHeader>
 
         <CardContent className="space-y-6">
@@ -141,7 +167,7 @@ export default function PolicyCenter() {
                 className="rounded-2xl border p-4"
               >
                 <Link
-                  to={item.href}
+                  to={buildPolicyLinkWithStudentRef(item.href, studentRef)}
                   className="inline-flex items-center gap-1 font-semibold text-green-700 hover:underline"
                 >
                   {item.label}
@@ -181,7 +207,7 @@ export default function PolicyCenter() {
               {optionalItems.map((item) => (
                 <div key={item.key} className="rounded-2xl border p-4">
                   <Link
-                    to={item.href}
+                    to={buildPolicyLinkWithStudentRef(item.href, studentRef)}
                     className="inline-flex items-center gap-1 font-semibold text-green-700 hover:underline"
                   >
                     {item.label}

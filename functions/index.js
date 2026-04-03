@@ -729,6 +729,18 @@ function isTutorRole(role) {
   return r === "tutor";
 }
 
+function isAgentRole(role) {
+  const r = normalizeRole(role);
+  return r === "agent";
+}
+
+function getScannerEntityType(role) {
+  if (isSchoolRole(role)) return "school";
+  if (isAgentRole(role)) return "agent";
+  if (isTutorRole(role)) return "tutor";
+  return null;
+}
+
 function sanitizeStudentPublic(studentDoc) {
   if (!studentDoc) return null;
 
@@ -774,6 +786,18 @@ function buildSchoolLeadDocId(schoolId, studentId) {
   return `${schoolId}_${studentId}`;
 }
 
+function buildAgentClientDocId(agentId, studentId) {
+  return `${agentId}_${studentId}`;
+}
+
+function buildTutorStudentDocId(tutorId, studentId) {
+  return `${tutorId}_${studentId}`;
+}
+
+function buildStudentReferralNotificationId(prefix, ownerId, studentId) {
+  return `${prefix}_${ownerId}_${studentId}`;
+}
+
 async function writeQrScanLog({
   token,
   tokenType,
@@ -801,6 +825,41 @@ async function writeQrScanLog({
   } catch (e) {
     console.error("writeQrScanLog error:", e);
   }
+}
+
+async function createNotificationIfNeeded(userId, notificationId, payload) {
+  if (!userId || !notificationId) return;
+  await admin
+    .firestore()
+    .collection("users")
+    .doc(userId)
+    .collection("notifications")
+    .doc(notificationId)
+    .set(
+      {
+        ...payload,
+        seen: false,
+        readAt: null,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+}
+
+function getNormalizedScannerRole(scannerUser, decoded) {
+  return normalizeRole(
+    scannerUser?.role ||
+      scannerUser?.user_type ||
+      scannerUser?.selected_role ||
+      scannerUser?.userType ||
+      decoded?.role
+  );
+}
+
+function getNormalizedStudentRole(student) {
+  return normalizeRole(
+    student?.role || student?.user_type || student?.selected_role || student?.userType
+  );
 }
 
 exports.getMyAgentReferralToken = onRequest(async (req, res) => {
@@ -938,6 +997,53 @@ exports.getAgentReferralPublic = onRequest(async (req, res) => {
   });
 });
 
+exports.getTutorReferralPublic = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "GET") {
+        return res.status(405).json({ ok: false, error: "GET only" });
+      }
+
+      const tutorRef = String(req.query.tutor_ref || req.query.ref || "").trim();
+      if (!tutorRef) {
+        return res.status(400).json({ ok: false, error: "Missing tutor_ref token" });
+      }
+
+      const q = await admin
+        .firestore()
+        .collection("users")
+        .where("tutorReferralQrToken", "==", tutorRef)
+        .limit(1)
+        .get();
+
+      if (q.empty) {
+        return res.status(404).json({ ok: false, error: "Tutor referral not found" });
+      }
+
+      const d = q.docs[0];
+      const tutor = d.data() || {};
+      const role = normalizeRole(
+        tutor.role || tutor.user_type || tutor.selected_role || tutor.userType
+      );
+
+      if (!isTutorRole(role)) {
+        return res.status(403).json({ ok: false, error: "Referral owner is not a tutor" });
+      }
+
+      return res.json({
+        ok: true,
+        tutorId: d.id,
+        tutorName: pickDisplayName(tutor),
+        tutorCompany: pickCompanyName(tutor),
+        role: "tutor",
+      });
+    } catch (e) {
+      console.error("getTutorReferralPublic error:", e);
+      return res.status(500).json({ ok: false, error: e?.message || "Server error" });
+    }
+  });
+});
+
 exports.acceptAgentReferral = onRequest(async (req, res) => {
   cors(req, res, async () => {
     try {
@@ -1036,12 +1142,10 @@ exports.acceptAgentReferral = onRequest(async (req, res) => {
               student.assigned_agent_id ||
               student.assignedAgentId ||
               agentId,
-
             referredByAgentId:
               student.referredByAgentId ||
               student.referred_by_agent_id ||
               agentId,
-
             referralType: "qr",
             updated_at: admin.firestore.FieldValue.serverTimestamp(),
           },
@@ -1067,6 +1171,7 @@ exports.acceptAgentReferral = onRequest(async (req, res) => {
 
       return res.json({
         ok: true,
+        success: true,
         agentId,
         agentName: pickDisplayName(agent),
       });
@@ -1080,6 +1185,156 @@ exports.acceptAgentReferral = onRequest(async (req, res) => {
           : low.includes("not found")
           ? 404
           : low.includes("only student") || low.includes("not an agent")
+          ? 403
+          : 400;
+
+      return res.status(code).json({ error: msg });
+    }
+  });
+});
+
+exports.acceptTutorReferral = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).json({ error: "POST only" });
+      }
+
+      const { uid, decoded } = await requireBearerUid(req);
+      const { tutor_ref, ref } = req.body || {};
+      const referralToken = String(tutor_ref || ref || "").trim();
+
+      if (!referralToken) {
+        return res.status(400).json({ error: "Missing tutor_ref token" });
+      }
+
+      const db = admin.firestore();
+      const userRef = db.collection("users").doc(uid);
+      const userSnap = await userRef.get();
+
+      if (!userSnap.exists) {
+        return res.status(404).json({ error: "Student user not found" });
+      }
+
+      const student = userSnap.data() || {};
+      const studentRole = normalizeRole(
+        student.role ||
+          student.user_type ||
+          student.selected_role ||
+          student.userType ||
+          decoded?.role
+      );
+
+      if (!isStudentRole(studentRole)) {
+        return res.status(403).json({ error: "Only student accounts can accept tutor referrals" });
+      }
+
+      const q = await db
+        .collection("users")
+        .where("tutorReferralQrToken", "==", referralToken)
+        .limit(1)
+        .get();
+
+      if (q.empty) {
+        return res.status(404).json({ error: "Referral tutor not found" });
+      }
+
+      const tutorDoc = q.docs[0];
+      const tutorId = tutorDoc.id;
+      const tutor = tutorDoc.data() || {};
+
+      const tutorRole = normalizeRole(
+        tutor.role || tutor.user_type || tutor.selected_role || tutor.userType
+      );
+
+      if (!isTutorRole(tutorRole)) {
+        return res.status(403).json({ error: "Referral owner is not a tutor" });
+      }
+
+      if (tutorId === uid) {
+        return res.status(400).json({ error: "You cannot refer yourself" });
+      }
+
+      const relationId = `${tutorId}_${uid}`;
+      const relationRef = db.collection("tutor_students").doc(relationId);
+
+      const notifId = `student_accept_${uid}`;
+      const notifRef = db
+        .collection("users")
+        .doc(tutorId)
+        .collection("notifications")
+        .doc(notifId);
+
+      await db.runTransaction(async (tx) => {
+        const relSnap = await tx.get(relationRef);
+
+        tx.set(
+          relationRef,
+          {
+            tutorId,
+            studentId: uid,
+            status: "active",
+            source: "qr",
+            acceptedByStudent: true,
+            createdAt: relSnap.exists
+              ? relSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()
+              : admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        tx.set(
+          userRef,
+          {
+            referred_by_tutor_id:
+              student.referred_by_tutor_id ||
+              student.referredByTutorId ||
+              tutorId,
+            referredByTutorId:
+              student.referredByTutorId ||
+              student.referred_by_tutor_id ||
+              tutorId,
+            tutor_student_status: "active",
+            tutorReferralType: "qr",
+            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        tx.set(
+          notifRef,
+          {
+            type: "student_tutor_referral_accept",
+            title: "New student accepted your referral",
+            body: `${pickDisplayName(student)} joined your student list`,
+            studentId: uid,
+            studentName: pickDisplayName(student),
+            link: `/viewprofile/${uid}`,
+            seen: false,
+            readAt: null,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      });
+
+      return res.json({
+        ok: true,
+        success: true,
+        tutorId,
+        tutorName: pickDisplayName(tutor),
+      });
+    } catch (e) {
+      console.error("acceptTutorReferral error:", e);
+      const msg = e?.message || "Failed to accept tutor referral";
+      const low = String(msg).toLowerCase();
+      const code =
+        low.includes("missing authorization")
+          ? 401
+          : low.includes("not found")
+          ? 404
+          : low.includes("only student") || low.includes("not a tutor")
           ? 403
           : 400;
 
@@ -1146,18 +1401,19 @@ exports.resolveStudentReferralToken = onRequest(async (req, res) => {
       }
 
       const { uid, decoded } = await requireBearerUid(req);
-      const schoolUser = await getUserDocByUid(uid);
+      const scannerUser = await getUserDocByUid(uid);
 
-      if (!schoolUser) {
-        return res.status(404).json({ error: "School user not found" });
+      if (!scannerUser) {
+        return res.status(404).json({ error: "User not found" });
       }
 
-      const schoolRole = normalizeRole(
-        schoolUser.role || schoolUser.user_type || schoolUser.selected_role || schoolUser.userType || decoded?.role
-      );
+      const scannerRole = getNormalizedScannerRole(scannerUser, decoded);
+      const scannerEntityType = getScannerEntityType(scannerRole);
 
-      if (!isSchoolRole(schoolRole)) {
-        return res.status(403).json({ error: "Only school accounts can resolve student QR" });
+      if (!scannerEntityType) {
+        return res
+          .status(403)
+          .json({ error: "Only school, agent, or tutor accounts can resolve student QR" });
       }
 
       const token = String(req.query.student_ref || req.query.ref || "").trim();
@@ -1177,41 +1433,534 @@ exports.resolveStudentReferralToken = onRequest(async (req, res) => {
           token,
           tokenType: "student",
           studentId: null,
-          schoolId: uid,
+          schoolId: scannerEntityType === "school" ? uid : null,
           scannedBy: uid,
           result: "not_found",
           duplicate: false,
+          meta: {
+            scannerRole,
+            scannerEntityType,
+          },
         });
         return res.status(404).json({ error: "Student referral not found" });
       }
 
       const d = q.docs[0];
       const student = d.data() || {};
-      const studentRole = normalizeRole(
-        student.role || student.user_type || student.selected_role || student.userType
-      );
+      const studentRole = getNormalizedStudentRole(student);
 
       if (!isStudentRole(studentRole)) {
         await writeQrScanLog({
           token,
           tokenType: "student",
           studentId: d.id,
-          schoolId: uid,
+          schoolId: scannerEntityType === "school" ? uid : null,
           scannedBy: uid,
           result: "invalid_owner_role",
           duplicate: false,
+          meta: {
+            scannerRole,
+            scannerEntityType,
+          },
         });
         return res.status(403).json({ error: "Referral owner is not a student" });
       }
 
       return res.json({
         ok: true,
+        success: true,
         token,
+        scannerRole,
+        scannerEntityType,
         student: sanitizeStudentPublic({ id: d.id, ...student }),
       });
     } catch (e) {
       console.error("resolveStudentReferralToken error:", e);
       return res.status(500).json({ error: e?.message || "Failed to resolve student token" });
+    }
+  });
+});
+
+async function acceptStudentReferralInternal({
+  uid,
+  decoded,
+  referralToken,
+  forcedTargetRole = null,
+}) {
+  const db = admin.firestore();
+  const scannerUser = await getUserDocByUid(uid);
+
+  if (!scannerUser) {
+    const err = new Error("User not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const scannerRole = getNormalizedScannerRole(scannerUser, decoded);
+  const detectedScannerEntityType = getScannerEntityType(scannerRole);
+
+  if (!detectedScannerEntityType) {
+    const err = new Error("Only school, agent, or tutor accounts can accept student QR");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const forcedEntityType = forcedTargetRole ? getScannerEntityType(forcedTargetRole) : null;
+
+  if (forcedTargetRole && !forcedEntityType) {
+    const err = new Error("Invalid forced scanner role");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (forcedEntityType && forcedEntityType !== detectedScannerEntityType) {
+    const err = new Error(
+      `This endpoint requires a ${forcedEntityType} account, but your account is ${detectedScannerEntityType}`
+    );
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const scannerEntityType = forcedEntityType || detectedScannerEntityType;
+
+  const q = await db
+    .collection("users")
+    .where("studentReferralQrToken", "==", referralToken)
+    .limit(1)
+    .get();
+
+  if (q.empty) {
+    await writeQrScanLog({
+      token: referralToken,
+      tokenType: "student",
+      studentId: null,
+      schoolId: scannerEntityType === "school" ? uid : null,
+      scannedBy: uid,
+      result: "not_found",
+      duplicate: false,
+      meta: {
+        scannerRole,
+        scannerEntityType,
+        forcedTargetRole: forcedTargetRole || null,
+      },
+    });
+
+    const err = new Error("Student referral not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const studentDoc = q.docs[0];
+  const studentId = studentDoc.id;
+  const student = studentDoc.data() || {};
+  const studentRole = getNormalizedStudentRole(student);
+
+  if (!isStudentRole(studentRole)) {
+    await writeQrScanLog({
+      token: referralToken,
+      tokenType: "student",
+      studentId,
+      schoolId: scannerEntityType === "school" ? uid : null,
+      scannedBy: uid,
+      result: "invalid_owner_role",
+      duplicate: false,
+      meta: {
+        scannerRole,
+        scannerEntityType,
+        forcedTargetRole: forcedTargetRole || null,
+      },
+    });
+
+    const err = new Error("Referral owner is not a student");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  if (studentId === uid) {
+    const err = new Error("You cannot scan your own student QR");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (scannerEntityType === "school") {
+    const school = await getSchoolOwnedByUser(uid);
+    const schoolId = school?.id || uid;
+    const schoolName =
+      school?.name ||
+      school?.school_name ||
+      school?.institution_name ||
+      pickDisplayName(scannerUser);
+
+    const leadId = buildSchoolLeadDocId(schoolId, studentId);
+    const leadRef = db.collection("school_leads").doc(leadId);
+    const studentRef = db.collection("users").doc(studentId);
+
+    const linkedAgentId =
+      student.assigned_agent_id ||
+      student.assignedAgentId ||
+      student.referred_by_agent_id ||
+      student.referredByAgentId ||
+      null;
+
+    const leadPayloadBase = {
+      student_id: studentId,
+      student_name: pickDisplayName(student),
+      student_email: pickEmail(student),
+      student_phone: pickPhone(student),
+
+      school_id: schoolId,
+      school_owner_user_id: uid,
+      school_name: schoolName,
+
+      status: "interested",
+      source: "qr",
+      lead_type: "qr",
+      schoolLeadType: "qr",
+
+      linked_agent_id: linkedAgentId || null,
+      assigned_agent_id: student.assigned_agent_id || student.assignedAgentId || null,
+      referred_by_agent_id:
+        student.referred_by_agent_id || student.referredByAgentId || null,
+    };
+
+    let alreadyExists = false;
+
+    await db.runTransaction(async (tx) => {
+      const leadSnap = await tx.get(leadRef);
+
+      if (leadSnap.exists) {
+        alreadyExists = true;
+        return;
+      }
+
+      tx.set(
+        leadRef,
+        {
+          ...leadPayloadBase,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      tx.set(
+        studentRef,
+        {
+          assigned_school_id: schoolId,
+          referredToSchoolId: schoolId,
+          schoolLeadType: "qr",
+          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      if (linkedAgentId) {
+        const notifRef = db
+          .collection("users")
+          .doc(linkedAgentId)
+          .collection("notifications")
+          .doc(`school_qr_${schoolId}_${studentId}`);
+
+        tx.set(
+          notifRef,
+          {
+            type: "school_student_qr_interest",
+            title: "A school scanned your student QR",
+            body: `${schoolName} connected with ${pickDisplayName(student)}`,
+            schoolId,
+            schoolName,
+            studentId,
+            studentName: pickDisplayName(student),
+            seen: false,
+            readAt: null,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            link: `/schoolleads`,
+          },
+          { merge: true }
+        );
+      }
+    });
+
+    await writeQrScanLog({
+      token: referralToken,
+      tokenType: "student",
+      studentId,
+      schoolId,
+      scannedBy: uid,
+      result: alreadyExists ? "duplicate" : "accepted",
+      duplicate: alreadyExists,
+      leadId,
+      meta: {
+        scannerRole,
+        scannerEntityType,
+        forcedTargetRole: forcedTargetRole || null,
+        targetCollection: "school_leads",
+        linkedAgentId: linkedAgentId || null,
+      },
+    });
+
+    return {
+      ok: true,
+      success: true,
+      targetRole: "school",
+      targetCollection: "school_leads",
+      relationId: leadId,
+      alreadyExists,
+      student: sanitizeStudentPublic({ id: studentId, ...student }),
+      school: {
+        schoolId,
+        schoolName,
+      },
+    };
+  }
+
+  if (scannerEntityType === "agent") {
+    const relationId = buildAgentClientDocId(uid, studentId);
+    const relationRef = db.collection("agent_clients").doc(relationId);
+    const studentRef = db.collection("users").doc(studentId);
+
+    const existingAssignedAgentId =
+      student.assigned_agent_id || student.assignedAgentId || null;
+    const existingReferredByAgentId =
+      student.referred_by_agent_id || student.referredByAgentId || null;
+
+    const assignmentLocked =
+      !!existingAssignedAgentId && String(existingAssignedAgentId) !== String(uid);
+
+    let alreadyExists = false;
+
+    await db.runTransaction(async (tx) => {
+      const relationSnap = await tx.get(relationRef);
+      alreadyExists = relationSnap.exists;
+
+      tx.set(
+        relationRef,
+        {
+          agentId: uid,
+          studentId,
+          status: "active",
+          source: "student_qr",
+          acceptedByAgent: true,
+          assignmentLocked,
+          createdAt: relationSnap.exists
+            ? relationSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()
+            : admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      const studentUpdate = {
+        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      if (!existingReferredByAgentId) {
+        studentUpdate.referred_by_agent_id = uid;
+        studentUpdate.referredByAgentId = uid;
+      }
+
+      if (!existingAssignedAgentId) {
+        studentUpdate.assigned_agent_id = uid;
+        studentUpdate.assignedAgentId = uid;
+      }
+
+      tx.set(studentRef, studentUpdate, { merge: true });
+    });
+
+    const agentName = pickDisplayName(scannerUser);
+
+    await createNotificationIfNeeded(
+      uid,
+      buildStudentReferralNotificationId("agent_student_qr", uid, studentId),
+      {
+        type: "agent_student_qr",
+        title: alreadyExists ? "Student already in your list" : "Student added to your list",
+        body: alreadyExists
+          ? `${pickDisplayName(student)} is already in your student list`
+          : `${pickDisplayName(student)} was added to your student list`,
+        studentId,
+        studentName: pickDisplayName(student),
+        link: `/students`,
+      }
+    );
+
+    await createNotificationIfNeeded(
+      studentId,
+      buildStudentReferralNotificationId("student_agent_qr", uid, studentId),
+      {
+        type: "student_agent_qr",
+        title: "An agent scanned your QR",
+        body: `${agentName} added you to their student list`,
+        agentId: uid,
+        agentName,
+        link: `/connections`,
+      }
+    );
+
+    await writeQrScanLog({
+      token: referralToken,
+      tokenType: "student",
+      studentId,
+      schoolId: null,
+      scannedBy: uid,
+      result: alreadyExists ? "duplicate" : "accepted",
+      duplicate: alreadyExists,
+      leadId: relationId,
+      meta: {
+        scannerRole,
+        scannerEntityType,
+        forcedTargetRole: forcedTargetRole || null,
+        targetCollection: "agent_clients",
+        assignmentLocked,
+      },
+    });
+
+    return {
+      ok: true,
+      success: true,
+      targetRole: "agent",
+      targetCollection: "agent_clients",
+      relationId,
+      alreadyExists,
+      assignmentLocked,
+      student: sanitizeStudentPublic({ id: studentId, ...student }),
+      agent: {
+        agentId: uid,
+        agentName,
+      },
+    };
+  }
+
+  if (scannerEntityType === "tutor") {
+    const relationId = buildTutorStudentDocId(uid, studentId);
+    const relationRef = db.collection("tutor_students").doc(relationId);
+    const studentRef = db.collection("users").doc(studentId);
+
+    let alreadyExists = false;
+
+    await db.runTransaction(async (tx) => {
+      const relationSnap = await tx.get(relationRef);
+      alreadyExists = relationSnap.exists;
+
+      tx.set(
+        relationRef,
+        {
+          tutorId: uid,
+          studentId,
+          status: "active",
+          source: "student_qr",
+          acceptedByTutor: true,
+          createdAt: relationSnap.exists
+            ? relationSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()
+            : admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      tx.set(
+        studentRef,
+        {
+          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    });
+
+    const tutorName = pickDisplayName(scannerUser);
+
+    await createNotificationIfNeeded(
+      uid,
+      buildStudentReferralNotificationId("tutor_student_qr", uid, studentId),
+      {
+        type: "tutor_student_qr",
+        title: alreadyExists ? "Student already in your list" : "Student added to your list",
+        body: alreadyExists
+          ? `${pickDisplayName(student)} is already in your student list`
+          : `${pickDisplayName(student)} was added to your student list`,
+        studentId,
+        studentName: pickDisplayName(student),
+        link: `/students`,
+      }
+    );
+
+    await createNotificationIfNeeded(
+      studentId,
+      buildStudentReferralNotificationId("student_tutor_qr", uid, studentId),
+      {
+        type: "student_tutor_qr",
+        title: "A tutor scanned your QR",
+        body: `${tutorName} added you to their student list`,
+        tutorId: uid,
+        tutorName,
+        link: `/connections`,
+      }
+    );
+
+    await writeQrScanLog({
+      token: referralToken,
+      tokenType: "student",
+      studentId,
+      schoolId: null,
+      scannedBy: uid,
+      result: alreadyExists ? "duplicate" : "accepted",
+      duplicate: alreadyExists,
+      leadId: relationId,
+      meta: {
+        scannerRole,
+        scannerEntityType,
+        forcedTargetRole: forcedTargetRole || null,
+        targetCollection: "tutor_students",
+      },
+    });
+
+    return {
+      ok: true,
+      success: true,
+      targetRole: "tutor",
+      targetCollection: "tutor_students",
+      relationId,
+      alreadyExists,
+      student: sanitizeStudentPublic({ id: studentId, ...student }),
+      tutor: {
+        tutorId: uid,
+        tutorName,
+      },
+    };
+  }
+
+  const err = new Error("Invalid role");
+  err.statusCode = 403;
+  throw err;
+}
+
+exports.acceptStudentReferral = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).json({ error: "POST only" });
+      }
+
+      const { uid, decoded } = await requireBearerUid(req);
+      const { student_ref, token } = req.body || {};
+      const referralToken = String(student_ref || token || "").trim();
+
+      if (!referralToken) {
+        return res.status(400).json({ error: "Missing student_ref token" });
+      }
+
+      const result = await acceptStudentReferralInternal({
+        uid,
+        decoded,
+        referralToken,
+      });
+
+      return res.json(result);
+    } catch (e) {
+      console.error("acceptStudentReferral error:", e);
+      return res.status(e?.statusCode || 500).json({
+        error: e?.message || "Failed to accept student referral",
+      });
     }
   });
 });
@@ -1231,217 +1980,87 @@ exports.acceptStudentReferralToSchool = onRequest(async (req, res) => {
         return res.status(400).json({ error: "Missing student_ref token" });
       }
 
-      const db = admin.firestore();
-      const schoolUser = await getUserDocByUid(uid);
-
-      if (!schoolUser) {
-        return res.status(404).json({ error: "School user not found" });
-      }
-
-      const schoolRole = normalizeRole(
-        schoolUser.role || schoolUser.user_type || schoolUser.selected_role || schoolUser.userType || decoded?.role
-      );
-
-      if (!isSchoolRole(schoolRole)) {
-        return res.status(403).json({ error: "Only school accounts can accept student QR" });
-      }
-
-      const school = await getSchoolOwnedByUser(uid);
-      const schoolId = school?.id || uid;
-      const schoolName =
-        school?.name ||
-        school?.school_name ||
-        school?.institution_name ||
-        pickDisplayName(schoolUser);
-
-      const q = await db
-        .collection("users")
-        .where("studentReferralQrToken", "==", referralToken)
-        .limit(1)
-        .get();
-
-      if (q.empty) {
-        await writeQrScanLog({
-          token: referralToken,
-          tokenType: "student",
-          studentId: null,
-          schoolId,
-          scannedBy: uid,
-          result: "not_found",
-          duplicate: false,
-        });
-        return res.status(404).json({ error: "Student referral not found" });
-      }
-
-      const studentDoc = q.docs[0];
-      const studentId = studentDoc.id;
-      const student = studentDoc.data() || {};
-
-      const studentRole = normalizeRole(
-        student.role || student.user_type || student.selected_role || student.userType
-      );
-
-      if (!isStudentRole(studentRole)) {
-        await writeQrScanLog({
-          token: referralToken,
-          tokenType: "student",
-          studentId,
-          schoolId,
-          scannedBy: uid,
-          result: "invalid_owner_role",
-          duplicate: false,
-        });
-        return res.status(403).json({ error: "Referral owner is not a student" });
-      }
-
-      if (studentId === uid) {
-        return res.status(400).json({ error: "School cannot accept its own account as student" });
-      }
-
-      const leadId = buildSchoolLeadDocId(schoolId, studentId);
-      const leadRef = db.collection("school_leads").doc(leadId);
-      const studentRef = db.collection("users").doc(studentId);
-
-      const linkedAgentId =
-        student.assigned_agent_id ||
-        student.assignedAgentId ||
-        student.referred_by_agent_id ||
-        student.referredByAgentId ||
-        null;
-
-      const leadPayloadBase = {
-        student_id: studentId,
-        student_name: pickDisplayName(student),
-        student_email: pickEmail(student),
-        student_phone: pickPhone(student),
-
-        school_id: schoolId,
-        school_owner_user_id: uid,
-        school_name: schoolName,
-
-        status: "interested",
-        source: "qr",
-        lead_type: "qr",
-        schoolLeadType: "qr",
-
-        linked_agent_id: linkedAgentId || null,
-        assigned_agent_id: student.assigned_agent_id || student.assignedAgentId || null,
-        referred_by_agent_id:
-          student.referred_by_agent_id || student.referredByAgentId || null,
-      };
-
-      let alreadyExists = false;
-
-      await db.runTransaction(async (tx) => {
-        const leadSnap = await tx.get(leadRef);
-
-        if (leadSnap.exists) {
-          alreadyExists = true;
-          return;
-        }
-
-        tx.set(
-          leadRef,
-          {
-            ...leadPayloadBase,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        tx.set(
-          studentRef,
-          {
-            assigned_school_id: schoolId,
-            referredToSchoolId: schoolId,
-            schoolLeadType: "qr",
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        if (linkedAgentId) {
-          const notifRef = db
-            .collection("users")
-            .doc(linkedAgentId)
-            .collection("notifications")
-            .doc(`school_qr_${schoolId}_${studentId}`);
-
-          tx.set(
-            notifRef,
-            {
-              type: "school_student_qr_interest",
-              title: "A school scanned your student QR",
-              body: `${schoolName} connected with ${pickDisplayName(student)}`,
-              schoolId,
-              schoolName,
-              studentId,
-              studentName: pickDisplayName(student),
-              seen: false,
-              readAt: null,
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
-              link: `/schoolleads`,
-            },
-            { merge: true }
-          );
-        }
+      const result = await acceptStudentReferralInternal({
+        uid,
+        decoded,
+        referralToken,
+        forcedTargetRole: "school",
       });
 
-      await writeQrScanLog({
-        token: referralToken,
-        tokenType: "student",
-        studentId,
-        schoolId,
-        scannedBy: uid,
-        result: alreadyExists ? "duplicate" : "accepted",
-        duplicate: alreadyExists,
-        leadId,
-        meta: {
-          linkedAgentId: linkedAgentId || null,
-        },
-      });
-
-      if (alreadyExists) {
-        return res.json({
-          ok: true,
-          alreadyExists: true,
-          leadId,
-          student: sanitizeStudentPublic({ id: studentId, ...student }),
-          school: {
-            schoolId,
-            schoolName,
-          },
-        });
-      }
-
-      return res.json({
-        ok: true,
-        alreadyExists: false,
-        leadId,
-        student: sanitizeStudentPublic({ id: studentId, ...student }),
-        school: {
-          schoolId,
-          schoolName,
-        },
-      });
+      return res.json(result);
     } catch (e) {
       console.error("acceptStudentReferralToSchool error:", e);
-      const msg = e?.message || "Failed to accept student referral";
-      const low = String(msg).toLowerCase();
-      const code =
-        low.includes("missing authorization")
-          ? 401
-          : low.includes("not found")
-          ? 404
-          : low.includes("only school")
-          ? 403
-          : 400;
-
-      return res.status(code).json({ error: msg });
+      return res.status(e?.statusCode || 500).json({
+        error: e?.message || "Failed to accept student referral for school",
+      });
     }
   });
 });
+
+exports.acceptStudentReferralToAgent = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).json({ error: "POST only" });
+      }
+
+      const { uid, decoded } = await requireBearerUid(req);
+      const { student_ref, token } = req.body || {};
+      const referralToken = String(student_ref || token || "").trim();
+
+      if (!referralToken) {
+        return res.status(400).json({ error: "Missing student_ref token" });
+      }
+
+      const result = await acceptStudentReferralInternal({
+        uid,
+        decoded,
+        referralToken,
+        forcedTargetRole: "agent",
+      });
+
+      return res.json(result);
+    } catch (e) {
+      console.error("acceptStudentReferralToAgent error:", e);
+      return res.status(e?.statusCode || 500).json({
+        error: e?.message || "Failed to accept student referral for agent",
+      });
+    }
+  });
+});
+
+exports.acceptStudentReferralToTutor = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    try {
+      if (req.method !== "POST") {
+        return res.status(405).json({ error: "POST only" });
+      }
+
+      const { uid, decoded } = await requireBearerUid(req);
+      const { student_ref, token } = req.body || {};
+      const referralToken = String(student_ref || token || "").trim();
+
+      if (!referralToken) {
+        return res.status(400).json({ error: "Missing student_ref token" });
+      }
+
+      const result = await acceptStudentReferralInternal({
+        uid,
+        decoded,
+        referralToken,
+        forcedTargetRole: "tutor",
+      });
+
+      return res.json(result);
+    } catch (e) {
+      console.error("acceptStudentReferralToTutor error:", e);
+      return res.status(e?.statusCode || 500).json({
+        error: e?.message || "Failed to accept student referral for tutor",
+      });
+    }
+  });
+});
+
 
 function randomCode(len = 48) {
   return crypto.randomBytes(len).toString("hex");
@@ -1802,25 +2421,37 @@ exports.acceptInvite = onRequest(async (req, res) => {
             { merge: true }
           );
         } else {
-          tx.set(
-            userRef,
-            {
-              role: invitedRole,
-              selected_role: invitedRole,
-              user_type: invitedRole,
-              userType: invitedRole,
-              onboarding_completed: false,
-              onboarding_step: "basic_info",
-              invited_by: {
-                uid: inv.inviterId || "",
-                role: inv.inviterRole || "",
-                inviteId,
-              },
-              updated_at: admin.firestore.FieldValue.serverTimestamp(),
-              email: authedEmail || admin.firestore.FieldValue.delete(),
+          const inviterId = String(inv.inviterId || "").trim();
+          const inviterRole = normalizeRole(inv.inviterRole);
+          const isAgentInvitingStudent =
+            inviterRole === "agent" && invitedRole === "student" && !!inviterId;
+
+          const userPayload = {
+            role: invitedRole,
+            selected_role: invitedRole,
+            user_type: invitedRole,
+            userType: invitedRole,
+            onboarding_completed: false,
+            onboarding_step: "basic_info",
+            invited_by: {
+              uid: inviterId,
+              role: inv.inviterRole || "",
+              inviteId,
             },
-            { merge: true }
-          );
+            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            email: authedEmail || admin.firestore.FieldValue.delete(),
+          };
+
+          // 🔥 MAIN FIX HERE
+          if (isAgentInvitingStudent) {
+            userPayload.assigned_agent_id = inviterId;
+            userPayload.assignedAgentId = inviterId;
+            userPayload.referred_by_agent_id = inviterId;
+            userPayload.referredByAgentId = inviterId;
+            userPayload.referralType = "invite";
+          }
+
+          tx.set(userRef, userPayload, { merge: true });
         }
 
         tx.update(inviteRef, {

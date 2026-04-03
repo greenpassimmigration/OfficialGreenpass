@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { TutoringSession } from '@/api/entities';
 import { User } from '@/api/entities';
 import { auth, db } from '@/firebase';
@@ -20,8 +20,9 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Users, MessageCircle, Calendar, Trash2 } from 'lucide-react';
+import { Users, MessageCircle, Calendar, Trash2, ScanLine, Camera, Loader2, X } from 'lucide-react';
 import { createPageUrl } from '@/utils';
+import { Html5Qrcode } from 'html5-qrcode';
 
 // ---- helpers ----
 const chunk = (arr, n) => {
@@ -56,30 +57,301 @@ const statusBadge = (status) => {
   return <Badge variant="outline">Needs schedule</Badge>;
 };
 
+function getFunctionsBase() {
+  const fromEnv =
+    import.meta.env.VITE_FUNCTIONS_BASE ||
+    import.meta.env.VITE_FUNCTIONS_HTTP_BASE ||
+    import.meta.env.VITE_FUNCTIONS_BASE_URL ||
+    import.meta.env.VITE_CLOUD_FUNCTIONS_BASE_URL ||
+    "";
+
+  if (fromEnv) return String(fromEnv).replace(/\/+$/, "");
+
+  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  if (projectId) {
+    return `https://us-central1-${projectId}.cloudfunctions.net`;
+  }
+
+  return "https://us-central1-greenpass-dc92d.cloudfunctions.net";
+}
+
+function extractStudentRefFromScannedText(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+
+  try {
+    const url = new URL(text);
+    return (
+      url.searchParams.get("student_ref") ||
+      url.searchParams.get("ref") ||
+      ""
+    ).trim();
+  } catch {
+    return text;
+  }
+}
+
+function ScannerModal({ open, onClose, onSubmitToken, busy, errorText, successText }) {
+  const qrRegionIdRef = useRef(`tutor-student-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const qrScannerRef = useRef(null);
+  const handledTokenRef = useRef("");
+  const [scannerStarting, setScannerStarting] = useState(false);
+  const [manualQrValue, setManualQrValue] = useState("");
+  const [cameraSupported, setCameraSupported] = useState(true);
+
+  const stopScanner = async () => {
+    try {
+      const scanner = qrScannerRef.current;
+      if (scanner) {
+        const state = scanner.getState?.();
+        if (state === 2 || state === 3) {
+          await scanner.stop().catch(() => {});
+        }
+        await scanner.clear().catch(() => {});
+      }
+    } catch {}
+    qrScannerRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!open) {
+      stopScanner();
+      return;
+    }
+
+    let mounted = true;
+
+    const startScanner = async () => {
+      setScannerStarting(true);
+      handledTokenRef.current = "";
+
+      try {
+        const hasCamera =
+          typeof navigator !== "undefined" &&
+          !!navigator.mediaDevices &&
+          typeof navigator.mediaDevices.getUserMedia === "function";
+
+        if (!hasCamera) {
+          setCameraSupported(false);
+          return;
+        }
+
+        setCameraSupported(true);
+
+        await stopScanner();
+
+        const scanner = new Html5Qrcode(qrRegionIdRef.current);
+        qrScannerRef.current = scanner;
+
+        const config = {
+          fps: 10,
+          qrbox: { width: 240, height: 240 },
+          aspectRatio: 1.7778,
+          rememberLastUsedCamera: true,
+        };
+
+        const onScanSuccess = async (decodedText) => {
+          const token = extractStudentRefFromScannedText(decodedText);
+          if (!token) return;
+          if (handledTokenRef.current === token || busy) return;
+
+          handledTokenRef.current = token;
+          await onSubmitToken(token);
+        };
+
+        try {
+          await scanner.start(
+            { facingMode: { exact: "environment" } },
+            config,
+            onScanSuccess,
+            () => {}
+          );
+        } catch (envErr) {
+          console.warn("Environment camera failed, trying user camera:", envErr);
+
+          try {
+            await scanner.start(
+              { facingMode: "user" },
+              config,
+              onScanSuccess,
+              () => {}
+            );
+          } catch (userErr) {
+            console.warn("User camera failed, trying first available camera:", userErr);
+
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras || !cameras.length) {
+              throw new Error("No camera found on this device.");
+            }
+
+            await scanner.start(
+              cameras[0].id,
+              config,
+              onScanSuccess,
+              () => {}
+            );
+          }
+        }
+      } catch (e) {
+        console.error("Scanner start failed:", e);
+
+        const msg = String(e?.message || "");
+        if (
+          msg.includes("NotReadableError") ||
+          msg.includes("Could not start video source")
+        ) {
+          console.warn("Camera is probably already being used by another app.");
+        }
+      } finally {
+        if (mounted) setScannerStarting(false);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      startScanner();
+    }, 200);
+
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+      stopScanner();
+    };
+  }, [open, busy, onSubmitToken]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl border">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div className="font-semibold">Scan Student QR</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 rounded-full hover:bg-gray-100 flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="text-sm text-gray-600">
+            Scan the student QR using your camera, or paste the student QR link/token manually.
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border bg-black">
+            <div className="relative aspect-video w-full">
+              <div id={qrRegionIdRef.current} className="h-full w-full" />
+
+              {!cameraSupported ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 bg-black/70 px-4 text-center">
+                  <Camera className="h-8 w-8 mb-3" />
+                  <div className="text-sm">Live camera QR scan is not supported here.</div>
+                  <div className="text-xs text-white/70 mt-1">
+                    Use the manual token/link input below.
+                  </div>
+                </div>
+              ) : null}
+
+              {scannerStarting ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting camera…
+                  </div>
+                </div>
+              ) : null}
+
+              {busy ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Adding student…
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {errorText ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorText}
+            </div>
+          ) : null}
+
+          {successText ? (
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+              {successText}
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Manual QR token / link</label>
+            <div className="flex gap-2">
+              <input
+                className="w-full border rounded-xl px-3 py-2"
+                placeholder="Paste student_ref link or token here..."
+                value={manualQrValue}
+                onChange={(e) => setManualQrValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && manualQrValue.trim()) {
+                    onSubmitToken(manualQrValue);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                className="rounded-xl"
+                disabled={busy || !manualQrValue.trim()}
+                onClick={() => onSubmitToken(manualQrValue)}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" className="rounded-xl" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TutorStudents() {
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorText, setErrorText] = useState("");
 
-  // auth (some pages use User.me, but we also listen to firebase auth for safety)
   const [meAuth, setMeAuth] = useState(null);
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => setMeAuth(u || null));
     return () => unsub?.();
   }, []);
 
-  // schedule modal
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleStudent, setScheduleStudent] = useState(null);
-  const [scheduleValue, setScheduleValue] = useState(""); // yyyy-MM-ddThh:mm
+  const [scheduleValue, setScheduleValue] = useState("");
   const [frequency, setFrequency] = useState("weekly");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // query param: your URL shows ?openschedule=...
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannerBusy, setScannerBusy] = useState(false);
+  const [scannerError, setScannerError] = useState("");
+  const [scannerSuccess, setScannerSuccess] = useState("");
+  const [urlProcessing, setUrlProcessing] = useState(false);
+
+  const processedUrlTokenRef = useRef("");
+
   const openScheduleStudentId = useMemo(() => {
     try {
       const sp = new URLSearchParams(location.search || "");
@@ -116,146 +388,144 @@ export default function TutorStudents() {
     setNotes("");
   };
 
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      setErrorText("");
+  const loadData = async () => {
+    setLoading(true);
+    setErrorText("");
 
-      try {
-        const currentUser = await User.me();
-        const tutorId = currentUser?.id || meAuth?.uid;
-        if (!tutorId) {
-          setStudents([]);
-          return;
-        }
-
-        // 1) Sessions (existing behavior)
-        const sessionData = await TutoringSession.filter({ tutor_id: tutorId });
-        const sessions = [...(sessionData || [])].sort(
-          (a, b) => new Date(b.scheduled_date || 0) - new Date(a.scheduled_date || 0)
-        );
-
-        const byStudent = new Map();
-        for (const s of sessions) {
-          const key = s.student_id || s.student_email || `unknown-${(s.id || Math.random()).toString()}`;
-          const bucket = byStudent.get(key) || [];
-          bucket.push(s);
-          byStudent.set(key, bucket);
-        }
-
-        // 2) Firestore tutor_students (NEW - so Add as student appears here)
-        const relQ = query(collection(db, "tutor_students"), where("tutor_id", "==", tutorId));
-        const relSnap = await getDocs(relQ);
-
-        const relByStudentId = {};
-        const relStudentIds = [];
-        relSnap.docs.forEach((d) => {
-          const data = d.data() || {};
-          if (data.student_id) {
-            relByStudentId[data.student_id] = { id: d.id, ...data };
-            relStudentIds.push(data.student_id);
-          }
-        });
-
-        // 3) Pull user docs for relationships (to show name/country)
-        const userById = {};
-        for (const batch of chunk(relStudentIds, 10)) {
-          const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
-          const usersSnap = await getDocs(usersQ);
-          usersSnap.docs.forEach((u) => (userById[u.id] = { id: u.id, ...(u.data() || {}) }));
-        }
-
-        // 4) Build rows = union of (sessions-based students) + (relationship-based students)
-        const rowsMap = new Map();
-
-        // from sessions
-        for (const [key, sess] of byStudent.entries()) {
-          const latest = sess[0];
-          const fullName = latest.student_full_name || latest.student_name || "Unnamed";
-          const email = latest.student_email || '';
-          const completed = sess.filter(x => x.status === 'completed');
-          const rated = sess.filter(x => typeof x.student_rating === 'number' && x.student_rating > 0);
-          const averageRating =
-            rated.length > 0
-              ? rated.reduce((sum, x) => sum + (x.student_rating || 0), 0) / rated.length
-              : 0;
-
-          // Try to link schedule data if key matches a real student_id
-          const rel = relByStudentId[key] || null;
-          const userDoc = userById[key] || null;
-
-          rowsMap.set(key, {
-            id: key,
-            full_name: userDoc?.fullName || userDoc?.displayName || fullName,
-            email: userDoc?.email || email,
-            role: userDoc?.role || userDoc?.user_role || "",
-            country: userDoc?.country || userDoc?.country_name || "",
-            country_code: userDoc?.country_code || userDoc?.countryCode || userDoc?.country_iso2 || "",
-            profile_picture: userDoc?.profile_picture || userDoc?.profilePicture || userDoc?.photoURL || userDoc?.photo_url || userDoc?.photoUrl || userDoc?.avatar || "",
-            subjects: Array.from(new Set(sess.map(x => x.subject).filter(Boolean))),
-            totalSessions: sess.length,
-            completedSessions: completed.length,
-            averageRating,
-            lastSession: latest,
-
-            schedule_status: rel?.schedule_status || "needs_schedule",
-            next_session_at: rel?.next_session_at || null,
-            session_frequency: rel?.session_frequency || "weekly",
-            session_notes: rel?.session_notes || "",
-          });
-        }
-
-        // from relationships (students added but no sessions yet)
-        for (const sid of relStudentIds) {
-          if (rowsMap.has(sid)) continue;
-          const rel = relByStudentId[sid];
-          const u = userById[sid] || {};
-          rowsMap.set(sid, {
-            id: sid,
-            full_name: (u.full_name || u.fullName || u.displayName || u.name || (u.email ? u.email.split("@")[0] : "") || "Unnamed"),
-            email: u.email || "",
-            role: u.role || u.user_role || "",
-            country: u.country || u.country_name || "",
-            country_code: u.country_code || u.countryCode || u.country_iso2 || "",
-            profile_picture: u.profile_picture || u.profilePicture || u.photoURL || u.photo_url || u.photoUrl || u.avatar || "",
-            subjects: [],
-            totalSessions: 0,
-            completedSessions: 0,
-            averageRating: 0,
-            lastSession: null,
-
-            schedule_status: rel?.schedule_status || "needs_schedule",
-            next_session_at: rel?.next_session_at || null,
-            session_frequency: rel?.session_frequency || "weekly",
-            session_notes: rel?.session_notes || "",
-          });
-        }
-
-        const rows = Array.from(rowsMap.values());
-
-        // sort: scheduled first, then needs_schedule, then paused, then by name
-        const order = { scheduled: 0, needs_schedule: 1, paused: 2 };
-        rows.sort((a, b) => {
-          const da = order[safeStr(a.schedule_status).toLowerCase()] ?? 99;
-          const dbb = order[safeStr(b.schedule_status).toLowerCase()] ?? 99;
-          if (da !== dbb) return da - dbb;
-          return safeStr(a.full_name).localeCompare(safeStr(b.full_name));
-        });
-
-        setStudents(rows);
-      } catch (error) {
-        console.error('Error loading students:', error);
-        setErrorText(error?.message || "Failed to load students");
-      } finally {
-        setLoading(false);
+    try {
+      const currentUser = await User.me();
+      const tutorId = currentUser?.id || meAuth?.uid;
+      if (!tutorId) {
+        setStudents([]);
+        return;
       }
-    };
 
+      const sessionData = await TutoringSession.filter({ tutor_id: tutorId });
+      const sessions = [...(sessionData || [])].sort(
+        (a, b) => new Date(b.scheduled_date || 0) - new Date(a.scheduled_date || 0)
+      );
+
+      const byStudent = new Map();
+      for (const s of sessions) {
+        const key = s.student_id || s.student_email || `unknown-${(s.id || Math.random()).toString()}`;
+        const bucket = byStudent.get(key) || [];
+        bucket.push(s);
+        byStudent.set(key, bucket);
+      }
+
+      const relQ1 = query(collection(db, "tutor_students"), where("tutor_id", "==", tutorId));
+      const relQ2 = query(collection(db, "tutor_students"), where("tutorId", "==", tutorId));
+
+      const [relSnap1, relSnap2] = await Promise.all([
+        getDocs(relQ1).catch(() => ({ docs: [] })),
+        getDocs(relQ2).catch(() => ({ docs: [] })),
+      ]);
+
+      const relByStudentId = {};
+      const relStudentIds = [];
+
+      [...(relSnap1.docs || []), ...(relSnap2.docs || [])].forEach((d) => {
+        const data = d.data() || {};
+        const sid = data.student_id || data.studentId;
+        if (sid) {
+          relByStudentId[sid] = { id: d.id, ...data };
+          relStudentIds.push(sid);
+        }
+      });
+
+      const userById = {};
+      const uniqueRelIds = Array.from(new Set(relStudentIds));
+      for (const batch of chunk(uniqueRelIds, 10)) {
+        const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
+        const usersSnap = await getDocs(usersQ);
+        usersSnap.docs.forEach((u) => (userById[u.id] = { id: u.id, ...(u.data() || {}) }));
+      }
+
+      const rowsMap = new Map();
+
+      for (const [key, sess] of byStudent.entries()) {
+        const latest = sess[0];
+        const fullName = latest.student_full_name || latest.student_name || "Unnamed";
+        const email = latest.student_email || '';
+        const completed = sess.filter(x => x.status === 'completed');
+        const rated = sess.filter(x => typeof x.student_rating === 'number' && x.student_rating > 0);
+        const averageRating =
+          rated.length > 0
+            ? rated.reduce((sum, x) => sum + (x.student_rating || 0), 0) / rated.length
+            : 0;
+
+        const rel = relByStudentId[key] || null;
+        const userDoc = userById[key] || null;
+
+        rowsMap.set(key, {
+          id: key,
+          full_name: userDoc?.fullName || userDoc?.full_name || userDoc?.displayName || fullName,
+          email: userDoc?.email || email,
+          role: userDoc?.role || userDoc?.user_role || "",
+          country: userDoc?.country || userDoc?.country_name || "",
+          country_code: userDoc?.country_code || userDoc?.countryCode || userDoc?.country_iso2 || "",
+          profile_picture: userDoc?.profile_picture || userDoc?.profilePicture || userDoc?.photoURL || userDoc?.photo_url || userDoc?.photoUrl || userDoc?.avatar || "",
+          subjects: Array.from(new Set(sess.map(x => x.subject).filter(Boolean))),
+          totalSessions: sess.length,
+          completedSessions: completed.length,
+          averageRating,
+          lastSession: latest,
+
+          schedule_status: rel?.schedule_status || "needs_schedule",
+          next_session_at: rel?.next_session_at || null,
+          session_frequency: rel?.session_frequency || "weekly",
+          session_notes: rel?.session_notes || "",
+        });
+      }
+
+      for (const sid of uniqueRelIds) {
+        if (rowsMap.has(sid)) continue;
+        const rel = relByStudentId[sid];
+        const u = userById[sid] || {};
+        rowsMap.set(sid, {
+          id: sid,
+          full_name: (u.full_name || u.fullName || u.displayName || u.name || (u.email ? u.email.split("@")[0] : "") || "Unnamed"),
+          email: u.email || "",
+          role: u.role || u.user_role || "",
+          country: u.country || u.country_name || "",
+          country_code: u.country_code || u.countryCode || u.country_iso2 || "",
+          profile_picture: u.profile_picture || u.profilePicture || u.photoURL || u.photo_url || u.photoUrl || u.avatar || "",
+          subjects: [],
+          totalSessions: 0,
+          completedSessions: 0,
+          averageRating: 0,
+          lastSession: null,
+
+          schedule_status: rel?.schedule_status || "needs_schedule",
+          next_session_at: rel?.next_session_at || null,
+          session_frequency: rel?.session_frequency || "weekly",
+          session_notes: rel?.session_notes || "",
+        });
+      }
+
+      const rows = Array.from(rowsMap.values());
+
+      const order = { scheduled: 0, needs_schedule: 1, paused: 2 };
+      rows.sort((a, b) => {
+        const da = order[safeStr(a.schedule_status).toLowerCase()] ?? 99;
+        const dbb = order[safeStr(b.schedule_status).toLowerCase()] ?? 99;
+        if (da !== dbb) return da - dbb;
+        return safeStr(a.full_name).localeCompare(safeStr(b.full_name));
+      });
+
+      setStudents(rows);
+    } catch (error) {
+      console.error('Error loading students:', error);
+      setErrorText(error?.message || "Failed to load students");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meAuth?.uid]);
 
-  // auto-open schedule after navigation
   useEffect(() => {
     if (loading) return;
     if (!openScheduleStudentId) return;
@@ -264,7 +534,6 @@ export default function TutorStudents() {
     if (found) {
       openScheduleFor(found);
 
-      // remove query param so it doesn't keep reopening
       try {
         const sp = new URLSearchParams(location.search || "");
         sp.delete("openschedule");
@@ -272,7 +541,6 @@ export default function TutorStudents() {
         navigate({ search: sp.toString() }, { replace: true });
       } catch {}
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, openScheduleStudentId, students]);
 
   const saveSchedule = async () => {
@@ -300,7 +568,6 @@ export default function TutorStudents() {
         updated_at: serverTimestamp(),
       });
 
-      // update local list quickly
       setStudents((prev) =>
         prev.map((s) =>
           s.id === scheduleStudent.id
@@ -333,7 +600,6 @@ export default function TutorStudents() {
       const relId = `${tutorId}_${student.id}`;
       await deleteDoc(doc(db, 'tutor_students', relId));
 
-      // remove from UI
       setStudents((prev) => prev.filter((s) => s.id !== student.id));
     } catch (e) {
       console.error('removeStudent error:', e);
@@ -344,6 +610,120 @@ export default function TutorStudents() {
   const goMessage = (studentId) => {
     navigate(createPageUrl(`Messages?to=${studentId}`));
   };
+
+  const handleTutorQrSubmit = async (rawValue, options = {}) => {
+    const token = extractStudentRefFromScannedText(rawValue);
+    if (!token) {
+      if (!options.silent) {
+        setScannerError("Could not read a valid student QR token.");
+      }
+      return { ok: false };
+    }
+
+    if (scannerBusy) return { ok: false };
+
+    setScannerBusy(true);
+    if (!options.silent) {
+      setScannerError("");
+      setScannerSuccess("");
+    }
+
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("You must be signed in.");
+
+      const idToken = await currentUser.getIdToken();
+      const base = getFunctionsBase();
+
+      const res = await fetch(`${base}/acceptStudentReferralToTutor`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          student_ref: token,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to add student.");
+      }
+
+      let successText = "Student added successfully.";
+      if (data?.alreadyExists) {
+        successText = "Student is already in your list.";
+      } else if (data?.student?.full_name) {
+        successText = `${data.student.full_name} added to your student list.`;
+      }
+
+      if (!options.silent) {
+        setScannerSuccess(successText);
+      }
+
+      await loadData();
+
+      if (!options.keepOpen && !options.silent) {
+        setTimeout(() => {
+          setScannerOpen(false);
+          setScannerSuccess("");
+          setScannerError("");
+        }, 900);
+      }
+
+      return { ok: true, data };
+    } catch (e) {
+      console.error("acceptStudentReferralToTutor failed:", e);
+      if (!options.silent) {
+        setScannerError(e?.message || "Failed to add student.");
+      }
+      return { ok: false, error: e };
+    } finally {
+      setScannerBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    const studentRefFromUrl = (
+      searchParams.get("student_ref") ||
+      searchParams.get("ref") ||
+      ""
+    ).trim();
+
+    if (!studentRefFromUrl) return;
+    if (!auth.currentUser && !meAuth?.uid) return;
+    if (processedUrlTokenRef.current === studentRefFromUrl) return;
+
+    processedUrlTokenRef.current = studentRefFromUrl;
+    setUrlProcessing(true);
+    setScannerError("");
+    setScannerSuccess("");
+
+    (async () => {
+      const result = await handleTutorQrSubmit(studentRefFromUrl, { silent: true });
+
+      if (result?.ok) {
+        setScannerSuccess(
+          result?.data?.alreadyExists
+            ? "Student is already in your list."
+            : (result?.data?.student?.full_name
+                ? `${result.data.student.full_name} added to your student list.`
+                : "Student added successfully.")
+        );
+      } else {
+        setScannerError(result?.error?.message || "Failed to add student.");
+      }
+
+      const next = new URLSearchParams(searchParams);
+      next.delete("student_ref");
+      next.delete("ref");
+      setSearchParams(next, { replace: true });
+
+      setUrlProcessing(false);
+    })();
+  }, [searchParams, meAuth?.uid]);
 
   if (loading) {
     return (
@@ -356,16 +736,50 @@ export default function TutorStudents() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-blue-50 p-6">
       <div className="max-w-7xl mx-auto">
-        <div className="flex items-center gap-4 mb-8">
-          <Users className="w-8 h-8 text-purple-600" />
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-            My Students
-          </h1>
+        <div className="flex items-center justify-between gap-4 mb-8">
+          <div className="flex items-center gap-4">
+            <Users className="w-8 h-8 text-purple-600" />
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
+              My Students
+            </h1>
+          </div>
+
+          <Button
+            type="button"
+            className="rounded-xl"
+            onClick={() => {
+              setScannerOpen(true);
+              setScannerError("");
+              setScannerSuccess("");
+            }}
+          >
+            <ScanLine className="h-4 w-4 mr-2" />
+            Scan Student QR
+          </Button>
         </div>
+
+        {!!urlProcessing && (
+          <div className="mb-4 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Processing student QR...
+          </div>
+        )}
 
         {!!errorText && (
           <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
             {errorText}
+          </div>
+        )}
+
+        {!!scannerError && !scannerOpen && (
+          <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">
+            {scannerError}
+          </div>
+        )}
+
+        {!!scannerSuccess && !scannerOpen && (
+          <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg p-3">
+            {scannerSuccess}
           </div>
         )}
 
@@ -382,7 +796,8 @@ export default function TutorStudents() {
                     <TableHead>Country</TableHead>
                     <TableHead>Next Session</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead>Frequency</TableHead>                    <TableHead className="text-right">Actions</TableHead>
+                    <TableHead>Frequency</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -478,9 +893,7 @@ export default function TutorStudents() {
                               title="Remove"
                               onClick={() => removeStudent(student)}
                             >
-                              {safeStr(student.schedule_status).toLowerCase() === "paused"
-                                ? <Trash2 className="w-4 h-4" />
-                                : <Trash2 className="w-4 h-4" />}
+                              <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
                         </TableCell>
@@ -499,7 +912,6 @@ export default function TutorStudents() {
           </CardContent>
         </Card>
 
-        {/* Schedule Modal */}
         {scheduleOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
             <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl p-5">
@@ -562,6 +974,18 @@ export default function TutorStudents() {
           </div>
         )}
 
+        <ScannerModal
+          open={scannerOpen}
+          onClose={() => {
+            setScannerOpen(false);
+            setScannerError("");
+            setScannerSuccess("");
+          }}
+          onSubmitToken={handleTutorQrSubmit}
+          busy={scannerBusy}
+          errorText={scannerError}
+          successText={scannerSuccess}
+        />
       </div>
     </div>
   );

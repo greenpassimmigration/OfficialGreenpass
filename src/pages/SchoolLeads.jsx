@@ -155,8 +155,17 @@ function extractStudentTokenFromScan(rawValue) {
 function getAssignedAgentId(lead) {
   const student = lead?.student || {};
   return (
+    lead?.assignedAgentId ||
+    lead?.assigned_agent_id ||
+    lead?.linked_agent_id ||
+    lead?.linkedAgentId ||
+    lead?.referred_by_agent_id ||
+    lead?.referredByAgentId ||
     student?.assigned_agent_id ||
+    student?.assignedAgentId ||
+    student?.referred_by_agent_id ||
     student?.referredByAgentId ||
+    (student?.invited_by?.role === 'agent' ? student?.invited_by?.uid : '') ||
     ''
   );
 }
@@ -165,6 +174,7 @@ function getAssignedAgentName(lead) {
   return (
     lead?.assignedAgent?.full_name ||
     lead?.assignedAgent?.name ||
+    lead?.assignedAgent?.displayName ||
     lead?.assignedAgentName ||
     '—'
   );
@@ -344,9 +354,24 @@ export default function SchoolLeads() {
 
       const agentIds = [
         ...new Set(
-          studentResults
-            .filter(Boolean)
-            .map((student) => student?.assigned_agent_id || student?.referredByAgentId)
+          schoolLeads
+            .map((lead) => {
+              const student = lead?.student_id ? studentsMap[lead.student_id] : null;
+              return (
+                lead?.assigned_agent_id ||
+                lead?.assignedAgentId ||
+                lead?.linked_agent_id ||
+                lead?.linkedAgentId ||
+                lead?.referred_by_agent_id ||
+                lead?.referredByAgentId ||
+                student?.assigned_agent_id ||
+                student?.assignedAgentId ||
+                student?.referred_by_agent_id ||
+                student?.referredByAgentId ||
+                (student?.invited_by?.role === 'agent' ? student?.invited_by?.uid : '') ||
+                ''
+              );
+            })
             .filter(Boolean)
         ),
       ];
@@ -379,16 +404,33 @@ export default function SchoolLeads() {
 
       const combinedLeads = schoolLeads.map((lead) => {
         const student = lead.student_id ? studentsMap[lead.student_id] : null;
+
         const assignedAgentId =
+          lead?.assigned_agent_id ||
+          lead?.assignedAgentId ||
+          lead?.linked_agent_id ||
+          lead?.linkedAgentId ||
+          lead?.referred_by_agent_id ||
+          lead?.referredByAgentId ||
           student?.assigned_agent_id ||
+          student?.assignedAgentId ||
+          student?.referred_by_agent_id ||
           student?.referredByAgentId ||
+          (student?.invited_by?.role === 'agent' ? student?.invited_by?.uid : '') ||
           '';
+
+        const assignedAgent = assignedAgentId ? agentsMap[assignedAgentId] : null;
 
         return {
           ...lead,
           student,
           assignedAgentId,
-          assignedAgent: assignedAgentId ? agentsMap[assignedAgentId] : null,
+          assignedAgent,
+          assignedAgentName:
+            assignedAgent?.full_name ||
+            assignedAgent?.name ||
+            assignedAgent?.displayName ||
+            '—',
         };
       });
 
@@ -479,36 +521,88 @@ export default function SchoolLeads() {
     scannerStartingRef.current = true;
 
     try {
+      const hasCamera =
+        typeof navigator !== 'undefined' &&
+        !!navigator.mediaDevices &&
+        typeof navigator.mediaDevices.getUserMedia === 'function';
+
+      if (!hasCamera) {
+        throw new Error('Camera is not supported on this browser/device.');
+      }
+
       await stopScanner();
 
       const qrScanner = new Html5Qrcode(QR_READER_ID);
       scannerRef.current = qrScanner;
 
-      await qrScanner.start(
-        { facingMode: 'environment' },
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 250 },
-          aspectRatio: 1.0,
-        },
-        async (decodedText) => {
-          const token = extractStudentTokenFromScan(decodedText);
-          if (!token) return;
+      const config = {
+        fps: 10,
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+        rememberLastUsedCamera: true,
+      };
 
-          try {
-            await stopScanner();
-            setShowScanner(false);
-            await resolveTokenIntoPendingLead(token);
-          } catch (e) {
-            console.error('QR scan resolve failed:', e);
-            setErrorText(e?.message || 'Failed to resolve scanned QR.');
+      const onScanSuccess = async (decodedText) => {
+        const token = extractStudentTokenFromScan(decodedText);
+        if (!token) return;
+
+        try {
+          await stopScanner();
+          setShowScanner(false);
+          await resolveTokenIntoPendingLead(token);
+        } catch (e) {
+          console.error('QR scan resolve failed:', e);
+          setErrorText(e?.message || 'Failed to resolve scanned QR.');
+        }
+      };
+
+      try {
+        await qrScanner.start(
+          { facingMode: { exact: 'environment' } },
+          config,
+          onScanSuccess,
+          () => {}
+        );
+      } catch (envErr) {
+        console.warn('Environment camera failed, trying user camera:', envErr);
+
+        try {
+          await qrScanner.start(
+            { facingMode: 'user' },
+            config,
+            onScanSuccess,
+            () => {}
+          );
+        } catch (userErr) {
+          console.warn('User camera failed, trying first available camera:', userErr);
+
+          const cameras = await Html5Qrcode.getCameras();
+          if (!cameras || !cameras.length) {
+            throw new Error('No camera found on this device.');
           }
-        },
-        () => {}
-      );
+
+          await qrScanner.start(
+            cameras[0].id,
+            config,
+            onScanSuccess,
+            () => {}
+          );
+        }
+      }
     } catch (e) {
       console.error('QR scanner start failed:', e);
-      setScannerError(e?.message || 'Unable to start QR scanner.');
+
+      const msg = String(e?.message || '');
+      if (
+        msg.includes('NotReadableError') ||
+        msg.includes('Could not start video source')
+      ) {
+        setScannerError(
+          'Camera is being used by another app like Discord, Zoom, or another browser tab. Please close it and try again.'
+        );
+      } else {
+        setScannerError(msg || 'Unable to start QR scanner.');
+      }
     } finally {
       setScannerLoading(false);
       scannerStartingRef.current = false;
