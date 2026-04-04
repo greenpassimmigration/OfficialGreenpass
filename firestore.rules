@@ -1372,18 +1372,65 @@ service cloud.firestore {
     }
 
     match /agent_clients/{relId} {
+      function reqAgentClientAgentId() {
+        return request.resource.data.agent_id != null
+          ? request.resource.data.agent_id
+          : request.resource.data.agentId;
+      }
+
+      function reqAgentClientStudentId() {
+        return request.resource.data.student_id != null
+          ? request.resource.data.student_id
+          : (
+              request.resource.data.studentId != null
+                ? request.resource.data.studentId
+                : (
+                    request.resource.data.client_id != null
+                      ? request.resource.data.client_id
+                      : request.resource.data.clientId
+                  )
+            );
+      }
+
+      function resAgentClientAgentId() {
+        return resource.data.agent_id != null
+          ? resource.data.agent_id
+          : resource.data.agentId;
+      }
+
+      function resAgentClientStudentId() {
+        return resource.data.student_id != null
+          ? resource.data.student_id
+          : (
+              resource.data.studentId != null
+                ? resource.data.studentId
+                : (
+                    resource.data.client_id != null
+                      ? resource.data.client_id
+                      : resource.data.clientId
+                  )
+            );
+      }
+
+      function isInviteCreatedByStudent() {
+        return reqAgentClientStudentId() is string
+          && reqAgentClientStudentId() == request.auth.uid
+          && reqAgentClientAgentId() is string
+          && (
+            request.resource.data.source == "invite" ||
+            request.resource.data.source == "invitation" ||
+            request.resource.data.referralType == "invite" ||
+            request.resource.data.referralType == "invitation"
+          );
+      }
+
       allow create: if signedIn() && (
         isAdmin() ||
         (
-          (
-            request.resource.data.agent_id is string &&
-            request.resource.data.agent_id == request.auth.uid
-          ) ||
-          (
-            request.resource.data.agentId is string &&
-            request.resource.data.agentId == request.auth.uid
-          )
-        )
+          reqAgentClientAgentId() is string &&
+          reqAgentClientAgentId() == request.auth.uid
+        ) ||
+        isInviteCreatedByStudent()
       );
 
       allow read: if signedIn() && (
@@ -1417,24 +1464,17 @@ service cloud.firestore {
       allow update: if signedIn() && (
         isAdmin() ||
         (
-          resource.data.agent_id is string &&
-          resource.data.agent_id == request.auth.uid
-        ) ||
-        (
-          resource.data.agentId is string &&
-          resource.data.agentId == request.auth.uid
+          resAgentClientAgentId() is string &&
+          resAgentClientAgentId() == request.auth.uid
         )
-      );
+      ) && reqAgentClientAgentId() == resAgentClientAgentId()
+        && reqAgentClientStudentId() == resAgentClientStudentId();
 
       allow delete: if signedIn() && (
         isAdmin() ||
         (
-          resource.data.agent_id is string &&
-          resource.data.agent_id == request.auth.uid
-        ) ||
-        (
-          resource.data.agentId is string &&
-          resource.data.agentId == request.auth.uid
+          resAgentClientAgentId() is string &&
+          resAgentClientAgentId() == request.auth.uid
         )
       );
     }

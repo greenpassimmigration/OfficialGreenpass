@@ -2,14 +2,27 @@ import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { getAuth } from "firebase/auth";
 import { getFirestore, doc, getDoc } from "firebase/firestore";
+import { createPageUrl } from "@/utils";
 
-function getUserRole(data) {
-  return (
+function normalizeRole(data) {
+  return String(
+    data?.selected_role ||
     data?.role ||
     data?.user_type ||
     data?.userType ||
     ""
-  ).toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function buildRoleTarget(role, token) {
+  const encoded = encodeURIComponent(token);
+
+  if (role === "school") return `${createPageUrl("SchoolLeads")}?student_ref=${encoded}`;
+  if (role === "agent") return `${createPageUrl("MyStudents")}?student_ref=${encoded}`;
+  if (role === "tutor") return `${createPageUrl("TutorStudents")}?student_ref=${encoded}`;
+  return "";
 }
 
 export default function StudentScanRouter() {
@@ -17,49 +30,61 @@ export default function StudentScanRouter() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    let cancelled = false;
+
     const run = async () => {
-      const studentRef = searchParams.get("student_ref");
+      const studentRef = String(searchParams.get("student_ref") || searchParams.get("ref") || "").trim();
 
       if (!studentRef) {
-        alert("Invalid QR Code");
+        window.alert("Invalid student QR.");
+        navigate(createPageUrl("Welcome"), { replace: true });
         return;
       }
 
-      // Save for later (important)
-      localStorage.setItem("gp_student_ref", studentRef);
+      try {
+        localStorage.setItem("gp_student_ref", studentRef);
+      } catch {}
 
       const auth = getAuth();
       const user = auth.currentUser;
 
-      // Not logged in → go to welcome
       if (!user) {
-        navigate(`/Welcome?student_ref=${studentRef}`);
+        navigate(`${createPageUrl("Welcome")}?student_ref=${encodeURIComponent(studentRef)}`, {
+          replace: true,
+        });
         return;
       }
 
-      const db = getFirestore();
-      const userDoc = await getDoc(doc(db, "users", user.uid));
+      try {
+        const db = getFirestore();
+        const userSnap = await getDoc(doc(db, "users", user.uid));
+        const role = userSnap.exists() ? normalizeRole(userSnap.data()) : "";
+        const target = buildRoleTarget(role, studentRef);
 
-      if (!userDoc.exists()) {
-        alert("User not found");
-        return;
-      }
+        if (cancelled) return;
 
-      const role = getUserRole(userDoc.data());
+        if (target) {
+          navigate(target, { replace: true });
+          return;
+        }
 
-      if (role === "school") {
-        navigate(`/SchoolLeads?student_ref=${studentRef}`);
-      } else if (role === "agent") {
-        navigate(`/MyStudents?student_ref=${studentRef}`);
-      } else if (role === "tutor") {
-        navigate(`/TutorStudents?student_ref=${studentRef}`);
-      } else {
-        alert("This QR is only for Schools, Agents, or Tutors.");
+        window.alert("This student QR can only be used by school, agent, or tutor accounts.");
+        navigate(createPageUrl("Welcome"), { replace: true });
+      } catch (error) {
+        console.error("StudentScanRouter failed:", error);
+        if (!cancelled) {
+          window.alert("Unable to process the student QR right now.");
+          navigate(createPageUrl("Welcome"), { replace: true });
+        }
       }
     };
 
     run();
-  }, [searchParams, navigate]);
 
-  return <div style={{ padding: 20 }}>Processing QR...</div>;
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, searchParams]);
+
+  return <div style={{ padding: 20 }}>Processing student QR...</div>;
 }

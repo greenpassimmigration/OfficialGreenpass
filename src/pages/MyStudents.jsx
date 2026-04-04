@@ -1,5 +1,5 @@
 // src/pages/MyStudents.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -40,10 +40,12 @@ import { Html5Qrcode } from "html5-qrcode";
 
 /**
  * AGENT-ONLY PAGE (My Clients)
- * - Client list = referred users + agent_clients relationship
+ * SOURCE OF TRUTH:
+ * - Client list = agent_clients only
+ * - User profile details are loaded from users collection using IDs from agent_clients
  * - Document checklist per client stored in: agent_client_checklists/{agentId}_{clientId}
  * - QR scanner for agent:
- *    scan student QR -> calls backend acceptStudentReferralToAgent -> student added to agent list
+ *    scan student QR -> calls backend acceptStudentReferralToAgent -> student added to agent_clients
  */
 
 const CHECKLIST_COLLECTION = "agent_client_checklists";
@@ -157,14 +159,30 @@ function extractStudentRefFromScannedText(raw) {
 
   try {
     const url = new URL(text);
-    return (
-      url.searchParams.get("student_ref") ||
-      url.searchParams.get("ref") ||
-      ""
-    ).trim();
+    return (url.searchParams.get("student_ref") || url.searchParams.get("ref") || "").trim();
   } catch {
     return text;
   }
+}
+
+function getClientIdFromRelation(data = {}) {
+  return data.studentId || data.student_id || data.clientId || data.client_id || null;
+}
+
+function buildSuccessText(data) {
+  let successText = "Student added successfully.";
+
+  if (data?.alreadyExists) {
+    successText = "Student is already in your client list.";
+  } else if (data?.student?.full_name) {
+    successText = `${data.student.full_name} added to your client list.`;
+  }
+
+  if (data?.assignmentLocked) {
+    successText += " Existing assigned agent was not changed.";
+  }
+
+  return successText;
 }
 
 export default function MyStudents() {
@@ -175,6 +193,7 @@ export default function MyStudents() {
   const [searchTerm, setSearchTerm] = useState("");
   const [errorText, setErrorText] = useState("");
   const [searchParams] = useSearchParams();
+
   const [docsOpen, setDocsOpen] = useState(false);
   const [activeClient, setActiveClient] = useState(null);
   const [docsSaving, setDocsSaving] = useState(false);
@@ -191,6 +210,13 @@ export default function MyStudents() {
   const qrRegionIdRef = useRef(`agent-student-qr-reader-${Math.random().toString(36).slice(2)}`);
   const qrScannerRef = useRef(null);
   const handledTokenRef = useRef("");
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const openDocs = (client) => {
     setActiveClient(client);
@@ -230,6 +256,8 @@ export default function MyStudents() {
 
     await setDoc(ref, payload, { merge: true });
 
+    if (!isMountedRef.current) return;
+
     setChecklistsByClient((prev) => ({
       ...prev,
       [clientId]: payload.documents,
@@ -252,7 +280,7 @@ export default function MyStudents() {
       console.error("Checklist toggle failed:", e);
       setErrorText(e?.message || "Failed to update document checklist.");
     } finally {
-      setDocsSaving(false);
+      if (isMountedRef.current) setDocsSaving(false);
     }
   };
 
@@ -278,12 +306,12 @@ export default function MyStudents() {
     setDocsSaving(true);
     try {
       await saveChecklist(me.uid, activeClient.id, next);
-      setDocName("");
+      if (isMountedRef.current) setDocName("");
     } catch (e) {
       console.error("Checklist add failed:", e);
       setErrorText(e?.message || "Failed to add document.");
     } finally {
-      setDocsSaving(false);
+      if (isMountedRef.current) setDocsSaving(false);
     }
   };
 
@@ -301,7 +329,7 @@ export default function MyStudents() {
       console.error("Checklist remove failed:", e);
       setErrorText(e?.message || "Failed to remove document.");
     } finally {
-      setDocsSaving(false);
+      if (isMountedRef.current) setDocsSaving(false);
     }
   };
 
@@ -325,7 +353,7 @@ export default function MyStudents() {
       console.error("Checklist template failed:", e);
       setErrorText(e?.message || "Failed to apply template.");
     } finally {
-      setDocsSaving(false);
+      if (isMountedRef.current) setDocsSaving(false);
     }
   };
 
@@ -333,7 +361,7 @@ export default function MyStudents() {
     window.location.href = createPageUrl(`Messages?to=${clientId}`);
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setErrorText("");
 
@@ -349,25 +377,6 @@ export default function MyStudents() {
         return;
       }
 
-      const referralQueries = [
-        query(collection(db, "users"), where("referredByAgentId", "==", me.uid)),
-        query(collection(db, "users"), where("assigned_agent_id", "==", me.uid)),
-        query(collection(db, "users"), where("referred_by_agent_id", "==", me.uid)),
-      ];
-
-      const referralSnapshots = await Promise.all(
-        referralQueries.map((qRef) =>
-          getDocs(qRef).catch((err) => {
-            console.error("Referral query failed:", err);
-            return { docs: [] };
-          })
-        )
-      );
-
-      const referredDocs = referralSnapshots
-        .flatMap((snap) => snap.docs || [])
-        .map((d) => ({ id: d.id, ...d.data() }));
-
       const agentClientQueries = [
         query(collection(db, "agent_clients"), where("agentId", "==", me.uid)),
         query(collection(db, "agent_clients"), where("agent_id", "==", me.uid)),
@@ -382,38 +391,46 @@ export default function MyStudents() {
         )
       );
 
-      const qrClientIds = agentClientSnapshots
-        .flatMap((snap) => snap.docs || [])
-        .map((d) => {
-          const data = d.data() || {};
-          return data.studentId || data.student_id || data.clientId || data.client_id || null;
-        })
-        .filter(Boolean);
+      const relationDocs = agentClientSnapshots.flatMap((snap) => snap.docs || []);
 
-      const removableIds = new Set(qrClientIds);
-      setRemovableClientIds(removableIds);
-
-      const relationUserIds = Array.from(new Set(qrClientIds));
-      const relationUsers = [];
-
-      if (relationUserIds.length) {
-        for (const batch of chunk(relationUserIds, 10)) {
-          const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
-          const usersSnap = await getDocs(usersQ);
-          usersSnap.docs.forEach((u) => relationUsers.push({ id: u.id, ...u.data() }));
-        }
-      }
-
-      const merged = [...referredDocs, ...relationUsers];
-      const seen = new Set();
-      const clientDocs = merged.filter((u) => {
-        if (!u?.id) return false;
-        if (seen.has(u.id)) return false;
-        seen.add(u.id);
+      const seenRelationDocIds = new Set();
+      const uniqueRelationDocs = relationDocs.filter((d) => {
+        if (!d?.id) return false;
+        if (seenRelationDocIds.has(d.id)) return false;
+        seenRelationDocIds.add(d.id);
         return true;
       });
 
-      setClients(clientDocs);
+      const relationUserIds = [];
+      const removableIds = new Set();
+
+      uniqueRelationDocs.forEach((d) => {
+        const clientId = getClientIdFromRelation(d.data() || {});
+        if (!clientId) return;
+        relationUserIds.push(clientId);
+        removableIds.add(clientId);
+      });
+
+      const uniqueUserIds = Array.from(new Set(relationUserIds));
+      const relationUsers = [];
+
+      if (uniqueUserIds.length) {
+        for (const batch of chunk(uniqueUserIds, 10)) {
+          const usersQ = query(collection(db, "users"), where(documentId(), "in", batch));
+          const usersSnap = await getDocs(usersQ);
+          usersSnap.docs.forEach((u) => {
+            relationUsers.push({ id: u.id, ...u.data() });
+          });
+        }
+      }
+
+      const seenUserIds = new Set();
+      const clientDocs = relationUsers.filter((u) => {
+        if (!u?.id) return false;
+        if (seenUserIds.has(u.id)) return false;
+        seenUserIds.add(u.id);
+        return true;
+      });
 
       const map = {};
       const checklistQueries = [
@@ -439,16 +456,24 @@ export default function MyStudents() {
         });
       });
 
+      if (!isMountedRef.current) return;
+
+      setClients(clientDocs);
+      setRemovableClientIds(removableIds);
       setChecklistsByClient(map);
     } catch (err) {
       console.error("Error fetching clients/checklists:", err);
-      setErrorText(err?.message || "Failed to load clients.");
+      if (isMountedRef.current) {
+        setErrorText(err?.message || "Failed to load clients.");
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const stopScanner = async () => {
+  const stopScanner = useCallback(async () => {
     try {
       const scanner = qrScannerRef.current;
       if (scanner) {
@@ -460,10 +485,12 @@ export default function MyStudents() {
       }
     } catch {}
     qrScannerRef.current = null;
-  };
+  }, []);
 
-  const closeScanner = async () => {
+  const closeScanner = useCallback(async () => {
     await stopScanner();
+    if (!isMountedRef.current) return;
+
     setScannerOpen(false);
     setScannerStarting(false);
     setScannerBusy(false);
@@ -471,73 +498,71 @@ export default function MyStudents() {
     setScannerSuccess("");
     setManualQrValue("");
     handledTokenRef.current = "";
-  };
+  }, [stopScanner]);
 
-  const handleAcceptStudentQr = async (rawValue) => {
-    const token = extractStudentRefFromScannedText(rawValue);
-    if (!token) {
-      setScannerError("Could not read a valid student QR token.");
-      return;
-    }
-
-    if (scannerBusy) return;
-    if (handledTokenRef.current === token) return;
-
-    handledTokenRef.current = token;
-    setScannerBusy(true);
-    setScannerError("");
-    setScannerSuccess("");
-
-    try {
-      const auth = getAuth();
-      const me = auth.currentUser;
-      if (!me) throw new Error("You must be signed in.");
-
-      const idToken = await me.getIdToken();
-      const base = getFunctionsBase();
-
-      const res = await fetch(`${base}/acceptStudentReferralToAgent`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({
-          student_ref: token,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to add student.");
+  const handleAcceptStudentQr = useCallback(
+    async (rawValue) => {
+      const token = extractStudentRefFromScannedText(rawValue);
+      if (!token) {
+        setScannerError("Could not read a valid student QR token.");
+        return;
       }
 
-      let successText = "Student added successfully.";
-      if (data?.alreadyExists) {
-        successText = "Student is already in your client list.";
-      } else if (data?.student?.full_name) {
-        successText = `${data.student.full_name} added to your client list.`;
+      if (scannerBusy) return;
+      if (handledTokenRef.current === token) return;
+
+      handledTokenRef.current = token;
+      setScannerBusy(true);
+      setScannerError("");
+      setScannerSuccess("");
+
+      try {
+        const auth = getAuth();
+        const me = auth.currentUser;
+        if (!me) throw new Error("You must be signed in.");
+
+        const idToken = await me.getIdToken();
+        const base = getFunctionsBase();
+
+        const res = await fetch(`${base}/acceptStudentReferralToAgent`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            student_ref: token,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(data?.error || "Failed to add student.");
+        }
+
+        if (!isMountedRef.current) return;
+
+        setScannerSuccess(buildSuccessText(data));
+        await fetchData();
+
+        setTimeout(() => {
+          closeScanner();
+        }, 900);
+      } catch (e) {
+        console.error("acceptStudentReferralToAgent failed:", e);
+        handledTokenRef.current = "";
+        if (isMountedRef.current) {
+          setScannerError(e?.message || "Failed to add student.");
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setScannerBusy(false);
+        }
       }
-
-      if (data?.assignmentLocked) {
-        successText += " Existing assigned agent was not changed.";
-      }
-
-      setScannerSuccess(successText);
-      await fetchData();
-
-      setTimeout(() => {
-        closeScanner();
-      }, 900);
-    } catch (e) {
-      console.error("acceptStudentReferralToAgent failed:", e);
-      handledTokenRef.current = "";
-      setScannerError(e?.message || "Failed to add student.");
-    } finally {
-      setScannerBusy(false);
-    }
-  };
+    },
+    [scannerBusy, fetchData, closeScanner]
+  );
 
   const startScanner = async () => {
     setScannerOpen(true);
@@ -578,14 +603,11 @@ export default function MyStudents() {
         };
 
         try {
-          // Mobile/back camera first
           await scanner.start({ facingMode: { exact: "environment" } }, config, onScan, () => {});
         } catch {
           try {
-            // Laptop/front camera fallback
             await scanner.start({ facingMode: "user" }, config, onScan, () => {});
           } catch {
-            // Any available camera fallback
             const cameras = await Html5Qrcode.getCameras();
             if (!cameras || !cameras.length) {
               throw new Error("No camera found on this device.");
@@ -597,7 +619,9 @@ export default function MyStudents() {
         console.error("Scanner start failed:", e);
         setScannerError(e?.message || "Could not access the camera. You can paste the QR token or link below.");
       } finally {
-        setScannerStarting(false);
+        if (isMountedRef.current) {
+          setScannerStarting(false);
+        }
       }
     }, 250);
   };
@@ -606,7 +630,6 @@ export default function MyStudents() {
     const auth = getAuth();
     const me = auth.currentUser;
     if (!me || !client?.id) return;
-
     if (!removableClientIds.has(client.id)) return;
 
     const ok = window.confirm(
@@ -615,17 +638,17 @@ export default function MyStudents() {
     if (!ok) return;
 
     try {
-      await Promise.allSettled([
-        deleteDoc(doc(db, "agent_clients", makeRelId(me.uid, client.id))),
-      ]);
+      await deleteDoc(doc(db, "agent_clients", makeRelId(me.uid, client.id)));
 
       try {
         await deleteDoc(doc(db, CHECKLIST_COLLECTION, makeRelId(me.uid, client.id)));
       } catch {}
 
+      if (!isMountedRef.current) return;
+
       setClients((prev) => prev.filter((c) => c.id !== client.id));
       setRemovableClientIds((prev) => {
-        const next = new Set(Array.from(prev));
+        const next = new Set(prev);
         next.delete(client.id);
         return next;
       });
@@ -636,16 +659,18 @@ export default function MyStudents() {
       });
     } catch (e) {
       console.error("Remove client failed:", e);
-      setErrorText(e?.message || "Failed to remove client.");
+      if (isMountedRef.current) {
+        setErrorText(e?.message || "Failed to remove client.");
+      }
     }
   };
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [fetchData]);
 
   useEffect(() => {
-    const studentRef = searchParams.get("student_ref");
+    const studentRef = searchParams.get("student_ref") || searchParams.get("ref");
     if (!studentRef) return;
 
     const process = async () => {
@@ -658,13 +683,13 @@ export default function MyStudents() {
     };
 
     process();
-  }, [searchParams]);
+  }, [searchParams, handleAcceptStudentQr]);
 
   useEffect(() => {
     return () => {
       stopScanner();
     };
-  }, []);
+  }, [stopScanner]);
 
   const filteredClients = useMemo(() => {
     const s = searchTerm.toLowerCase().trim();
@@ -747,9 +772,7 @@ export default function MyStudents() {
                     <TableRow key={client.id}>
                       <TableCell>
                         <div className="font-medium">{client.full_name || "Unnamed"}</div>
-                        <div className="text-sm text-muted-foreground">
-                          {client.email || "No email"}
-                        </div>
+                        <div className="text-sm text-muted-foreground">{client.email || "No email"}</div>
                       </TableCell>
 
                       <TableCell className="whitespace-nowrap">
@@ -795,9 +818,7 @@ export default function MyStudents() {
                             className="rounded-xl"
                             disabled={!isRemovable}
                             title={
-                              isRemovable
-                                ? "Remove from your client list"
-                                : "Referred clients can't be removed here"
+                              isRemovable ? "Remove from your client list" : "Client cannot be removed"
                             }
                             onClick={() => handleRemoveClient(client)}
                           >
@@ -856,9 +877,7 @@ export default function MyStudents() {
                         className="rounded-xl"
                         disabled={!isRemovable}
                         title={
-                          isRemovable
-                            ? "Remove from your client list"
-                            : "Referred clients can't be removed here"
+                          isRemovable ? "Remove from your client list" : "Client cannot be removed"
                         }
                         onClick={() => handleRemoveClient(client)}
                       >
@@ -899,18 +918,13 @@ export default function MyStudents() {
       <Modal
         open={docsOpen}
         onClose={closeDocs}
-        title={
-          activeClient
-            ? `Documents • ${activeClient.full_name || activeClient.email || "Client"}`
-            : "Documents"
-        }
+        title={activeClient ? `Documents • ${activeClient.full_name || activeClient.email || "Client"}` : "Documents"}
       >
         {!activeClient ? null : (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm text-gray-600">
-                Create a required document list for this client, then tick off items as they submit
-                them.
+                Create a required document list for this client, then tick off items as they submit them.
               </div>
 
               <div className="flex items-center gap-2">
@@ -952,8 +966,7 @@ export default function MyStudents() {
             <div className="border rounded-2xl overflow-hidden">
               {activeDocs.length === 0 ? (
                 <div className="p-4 text-sm text-gray-600">
-                  No documents yet. Click <span className="font-medium">Use template</span> or add
-                  your own.
+                  No documents yet. Click <span className="font-medium">Use template</span> or add your own.
                 </div>
               ) : (
                 <div className="divide-y">
@@ -969,9 +982,7 @@ export default function MyStudents() {
                         />
                         <div>
                           <div className="font-medium">{d.name}</div>
-                          <div className="text-xs text-gray-500">
-                            {d.submitted ? "Submitted" : "Pending"}
-                          </div>
+                          <div className="text-xs text-gray-500">{d.submitted ? "Submitted" : "Pending"}</div>
                         </div>
                       </label>
 
@@ -1015,9 +1026,7 @@ export default function MyStudents() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 bg-black/70 px-4 text-center">
                   <Camera className="h-8 w-8 mb-3" />
                   <div className="text-sm">Live camera QR scan is not supported here.</div>
-                  <div className="text-xs text-white/70 mt-1">
-                    Use the manual token/link input below.
-                  </div>
+                  <div className="text-xs text-white/70 mt-1">Use the manual token/link input below.</div>
                 </div>
               ) : null}
 

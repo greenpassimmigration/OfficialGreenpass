@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { User } from '@/api/entities';
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -19,6 +19,7 @@ import {
   XCircle,
   Camera,
   Eye,
+  X,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -39,11 +40,17 @@ import {
 
 import { useSubscriptionMode } from '@/hooks/useSubscriptionMode';
 
-const FUNCTIONS_BASE =
-  import.meta.env.VITE_FUNCTIONS_BASE ||
-  "https://us-central1-greenpass-dc92d.cloudfunctions.net";
+function getFunctionsBase() {
+  const fromEnv =
+    import.meta.env.VITE_FUNCTIONS_BASE ||
+    import.meta.env.VITE_FUNCTIONS_HTTP_BASE ||
+    import.meta.env.VITE_FUNCTIONS_BASE_URL ||
+    import.meta.env.VITE_CLOUD_FUNCTIONS_BASE_URL ||
+    "";
 
-const QR_READER_ID = 'school-student-qr-reader';
+  if (fromEnv) return String(fromEnv).replace(/\/+$/, "");
+  return "https://us-central1-greenpass-dc92d.cloudfunctions.net";
+}
 
 const StatusBadge = ({ status = '' }) => {
   const colors = {
@@ -128,14 +135,6 @@ function maskPhone(phone) {
   return `${'*'.repeat(Math.max(6, digits.length - 2))}${visible}`;
 }
 
-function removeStudentRefFromUrl() {
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.delete('student_ref');
-    window.history.replaceState({}, '', url.toString());
-  } catch {}
-}
-
 function extractStudentTokenFromScan(rawValue) {
   const text = String(rawValue || '').trim();
   if (!text) return '';
@@ -145,8 +144,8 @@ function extractStudentTokenFromScan(rawValue) {
     return (
       url.searchParams.get('student_ref') ||
       url.searchParams.get('ref') ||
-      text
-    );
+      ''
+    ).trim();
   } catch {
     return text;
   }
@@ -185,9 +184,10 @@ async function resolveStudentQrToken(token) {
   if (!fbUser) throw new Error('Not signed in');
 
   const idToken = await fbUser.getIdToken();
+  const base = getFunctionsBase();
 
   const response = await fetch(
-    `${FUNCTIONS_BASE.replace(/\/+$/, '')}/resolveStudentReferralToken?student_ref=${encodeURIComponent(token)}`,
+    `${base}/resolveStudentReferralToken?student_ref=${encodeURIComponent(token)}`,
     {
       method: 'GET',
       headers: {
@@ -215,9 +215,10 @@ async function acceptStudentQrLead(token) {
   if (!fbUser) throw new Error('Not signed in');
 
   const idToken = await fbUser.getIdToken();
+  const base = getFunctionsBase();
 
   const response = await fetch(
-    `${FUNCTIONS_BASE.replace(/\/+$/, '')}/acceptStudentReferralToSchool`,
+    `${base}/acceptStudentReferralToSchool`,
     {
       method: 'POST',
       headers: {
@@ -235,6 +236,234 @@ async function acceptStudentQrLead(token) {
   }
 
   return data;
+}
+
+function buildSchoolQrSuccessText(data) {
+  if (data?.alreadyExists) return 'This student is already in your leads.';
+  if (data?.student?.full_name) return `${data.student.full_name} added to your leads.`;
+  return 'Student added to your leads.';
+}
+
+function ScannerModal({ open, onClose, onSubmitToken, busy, errorText, successText }) {
+  const qrRegionIdRef = useRef(`school-student-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const qrScannerRef = useRef(null);
+  const handledTokenRef = useRef("");
+  const [scannerStarting, setScannerStarting] = useState(false);
+  const [manualQrValue, setManualQrValue] = useState("");
+  const [cameraSupported, setCameraSupported] = useState(true);
+
+  const stopScanner = useCallback(async () => {
+    try {
+      const scanner = qrScannerRef.current;
+      if (scanner) {
+        const state = scanner.getState?.();
+        if (state === 2 || state === 3) {
+          await scanner.stop().catch(() => {});
+        }
+        await scanner.clear().catch(() => {});
+      }
+    } catch {}
+    qrScannerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!open) {
+      stopScanner();
+      return;
+    }
+
+    let mounted = true;
+
+    const startScanner = async () => {
+      setScannerStarting(true);
+      handledTokenRef.current = "";
+
+      try {
+        const hasCamera =
+          typeof navigator !== "undefined" &&
+          !!navigator.mediaDevices &&
+          typeof navigator.mediaDevices.getUserMedia === "function";
+
+        if (!hasCamera) {
+          setCameraSupported(false);
+          return;
+        }
+
+        setCameraSupported(true);
+        await stopScanner();
+
+        const scanner = new Html5Qrcode(qrRegionIdRef.current);
+        qrScannerRef.current = scanner;
+
+        const config = {
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+          aspectRatio: 1.0,
+          rememberLastUsedCamera: true,
+        };
+
+        const onScanSuccess = async (decodedText) => {
+          const token = extractStudentTokenFromScan(decodedText);
+          if (!token) return;
+          if (handledTokenRef.current === token || busy) return;
+
+          handledTokenRef.current = token;
+          const result = await onSubmitToken(token);
+
+          if (!result?.ok) {
+            handledTokenRef.current = "";
+          }
+        };
+
+        try {
+          await scanner.start(
+            { facingMode: { exact: 'environment' } },
+            config,
+            onScanSuccess,
+            () => {}
+          );
+        } catch {
+          try {
+            await scanner.start(
+              { facingMode: 'user' },
+              config,
+              onScanSuccess,
+              () => {}
+            );
+          } catch {
+            const cameras = await Html5Qrcode.getCameras();
+            if (!cameras || !cameras.length) {
+              throw new Error('No camera found on this device.');
+            }
+
+            await scanner.start(
+              cameras[0].id,
+              config,
+              onScanSuccess,
+              () => {}
+            );
+          }
+        }
+      } catch (e) {
+        console.error('QR scanner start failed:', e);
+      } finally {
+        if (mounted) setScannerStarting(false);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      startScanner();
+    }, 120);
+
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+      stopScanner();
+    };
+  }, [open, onSubmitToken, busy, stopScanner]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-xl border">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div className="font-semibold">Scan Student QR</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 rounded-full hover:bg-gray-100 flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="text-sm text-gray-600">
+            Scan the student QR using your camera, or paste the student QR link/token manually.
+          </div>
+
+          <div className="overflow-hidden rounded-2xl border bg-black">
+            <div className="relative aspect-video w-full">
+              <div id={qrRegionIdRef.current} className="h-full w-full" />
+
+              {!cameraSupported ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 bg-black/70 px-4 text-center">
+                  <Camera className="h-8 w-8 mb-3" />
+                  <div className="text-sm">Live camera QR scan is not supported here.</div>
+                  <div className="text-xs text-white/70 mt-1">
+                    Use the manual token/link input below.
+                  </div>
+                </div>
+              ) : null}
+
+              {scannerStarting ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Starting camera…
+                  </div>
+                </div>
+              ) : null}
+
+              {busy ? (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-white">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Processing QR…
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {errorText ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorText}
+            </div>
+          ) : null}
+
+          {successText ? (
+            <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+              {successText}
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Manual QR token / link</label>
+            <div className="flex gap-2">
+              <Input
+                className="rounded-xl"
+                placeholder="Paste student_ref link or token here..."
+                value={manualQrValue}
+                onChange={(e) => setManualQrValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && manualQrValue.trim()) {
+                    onSubmitToken(manualQrValue);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                className="rounded-xl"
+                disabled={busy || !manualQrValue.trim()}
+                onClick={() => onSubmitToken(manualQrValue)}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <Button type="button" variant="outline" className="rounded-xl" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function SchoolLeads() {
@@ -255,32 +484,44 @@ export default function SchoolLeads() {
   const [qrNotice, setQrNotice] = useState('');
 
   const [showScanner, setShowScanner] = useState(false);
+  const [scannerBusy, setScannerBusy] = useState(false);
   const [scannerError, setScannerError] = useState('');
-  const [scannerLoading, setScannerLoading] = useState(false);
+  const [scannerSuccess, setScannerSuccess] = useState('');
 
-  const scannerRef = useRef(null);
-  const scannerStartingRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const handledUrlTokenRef = useRef("");
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const shouldMaskLeadInfo =
     subscriptionModeEnabled && isSubInactiveForRole(meDoc);
 
   const loadLeads = useCallback(async () => {
     setLoading(true);
+
     try {
       const fbUser = auth.currentUser;
 
       if (!fbUser?.uid) {
-        setLeads([]);
-        setMeDoc(null);
+        if (isMountedRef.current) {
+          setLeads([]);
+          setMeDoc(null);
+        }
         return;
       }
 
       try {
         const meSnap = await getDoc(doc(db, 'users', fbUser.uid));
-        setMeDoc(meSnap.exists() ? meSnap.data() : null);
+        if (isMountedRef.current) {
+          setMeDoc(meSnap.exists() ? meSnap.data() : null);
+        }
       } catch (e) {
         console.error('Error loading current user doc:', e);
-        setMeDoc(null);
+        if (isMountedRef.current) setMeDoc(null);
       }
 
       const qLead = query(
@@ -289,7 +530,6 @@ export default function SchoolLeads() {
       );
 
       const leadSnap = await getDocs(qLead);
-
       const schoolLeads = leadSnap.docs.map((docSnap) => ({
         id: docSnap.id,
         ...docSnap.data(),
@@ -318,7 +558,7 @@ export default function SchoolLeads() {
       });
 
       if (schoolLeads.length === 0) {
-        setLeads([]);
+        if (isMountedRef.current) setLeads([]);
         return;
       }
 
@@ -434,41 +674,34 @@ export default function SchoolLeads() {
         };
       });
 
-      setLeads(combinedLeads);
+      if (isMountedRef.current) setLeads(combinedLeads);
     } catch (error) {
       console.error('Error loading school leads:', error);
-      setLeads([]);
-      setErrorText(error?.message || 'Failed to load school leads.');
+      if (isMountedRef.current) {
+        setLeads([]);
+        setErrorText(error?.message || 'Failed to load school leads.');
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
   }, []);
 
-  const stopScanner = useCallback(async () => {
-    const scanner = scannerRef.current;
-    scannerRef.current = null;
+  useEffect(() => {
+    loadLeads();
+  }, [loadLeads]);
 
-    if (!scanner) return;
-
+  const removeStudentRefFromUrl = useCallback(() => {
     try {
-      const state = scanner.getState?.();
-      if (state === 2 || state === 3) {
-        await scanner.stop();
-      }
-    } catch (e) {
-      console.warn('Scanner stop warning:', e);
-    }
-
-    try {
-      await scanner.clear();
-    } catch (e) {
-      console.warn('Scanner clear warning:', e);
-    }
+      const url = new URL(window.location.href);
+      url.searchParams.delete('student_ref');
+      url.searchParams.delete('ref');
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
   }, []);
 
   const resolveTokenIntoPendingLead = useCallback(async (token) => {
     const fbUser = auth.currentUser;
-    if (!fbUser?.uid) return;
+    if (!fbUser?.uid) return { ok: false };
 
     setResolvingQrLead(true);
     setQrNotice('');
@@ -478,191 +711,127 @@ export default function SchoolLeads() {
     try {
       const meSnap = await getDoc(doc(db, 'users', fbUser.uid));
       const currentMeDoc = meSnap.exists() ? meSnap.data() : null;
-      setMeDoc(currentMeDoc);
+      if (isMountedRef.current) setMeDoc(currentMeDoc);
 
       const role = resolveUserRole(currentMeDoc);
       if (role !== 'school') {
-        setQrNotice('Only school accounts can accept student QR codes.');
-        setPendingQrLead(null);
-        return;
+        if (isMountedRef.current) {
+          setQrNotice('Only school accounts can accept student QR codes.');
+          setPendingQrLead(null);
+        }
+        return { ok: false };
       }
 
       const resolved = await resolveStudentQrToken(token);
 
-      setPendingQrLead({
-        ...resolved,
-        alreadyExists: false,
-      });
+      if (isMountedRef.current) {
+        setPendingQrLead({
+          ...resolved,
+          alreadyExists: false,
+        });
+      }
+
+      return { ok: true, data: resolved };
     } catch (e) {
       console.error('Failed to resolve student QR:', e);
-      setPendingQrLead(null);
-      setErrorText(e?.message || 'Failed to resolve student QR.');
+      if (isMountedRef.current) {
+        setPendingQrLead(null);
+        setErrorText(e?.message || 'Failed to resolve student QR.');
+      }
+      return { ok: false, error: e };
     } finally {
-      setResolvingQrLead(false);
+      if (isMountedRef.current) setResolvingQrLead(false);
     }
   }, []);
 
-  const resolvePendingQrLead = useCallback(async () => {
-    const fbUser = auth.currentUser;
-    if (!fbUser?.uid) return;
-
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('student_ref');
-    if (!token) return;
-
-    await resolveTokenIntoPendingLead(token);
-  }, [resolveTokenIntoPendingLead]);
-
-  const startQrScanner = useCallback(async () => {
-    if (scannerStartingRef.current) return;
-
-    setScannerError('');
-    setScannerLoading(true);
-    scannerStartingRef.current = true;
-
-    try {
-      const hasCamera =
-        typeof navigator !== 'undefined' &&
-        !!navigator.mediaDevices &&
-        typeof navigator.mediaDevices.getUserMedia === 'function';
-
-      if (!hasCamera) {
-        throw new Error('Camera is not supported on this browser/device.');
+  const handleSchoolQrSubmit = useCallback(
+    async (rawValue, options = {}) => {
+      const token = extractStudentTokenFromScan(rawValue);
+      if (!token) {
+        if (!options.silent) setScannerError('Could not read a valid student QR token.');
+        return { ok: false };
       }
 
-      await stopScanner();
+      if (scannerBusy) return { ok: false };
 
-      const qrScanner = new Html5Qrcode(QR_READER_ID);
-      scannerRef.current = qrScanner;
-
-      const config = {
-        fps: 10,
-        qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0,
-        rememberLastUsedCamera: true,
-      };
-
-      const onScanSuccess = async (decodedText) => {
-        const token = extractStudentTokenFromScan(decodedText);
-        if (!token) return;
-
-        try {
-          await stopScanner();
-          setShowScanner(false);
-          await resolveTokenIntoPendingLead(token);
-        } catch (e) {
-          console.error('QR scan resolve failed:', e);
-          setErrorText(e?.message || 'Failed to resolve scanned QR.');
-        }
-      };
+      setScannerBusy(true);
+      if (!options.silent) {
+        setScannerError('');
+        setScannerSuccess('');
+      }
 
       try {
-        await qrScanner.start(
-          { facingMode: { exact: 'environment' } },
-          config,
-          onScanSuccess,
-          () => {}
-        );
-      } catch (envErr) {
-        console.warn('Environment camera failed, trying user camera:', envErr);
+        const result = await resolveTokenIntoPendingLead(token);
 
-        try {
-          await qrScanner.start(
-            { facingMode: 'user' },
-            config,
-            onScanSuccess,
-            () => {}
-          );
-        } catch (userErr) {
-          console.warn('User camera failed, trying first available camera:', userErr);
-
-          const cameras = await Html5Qrcode.getCameras();
-          if (!cameras || !cameras.length) {
-            throw new Error('No camera found on this device.');
-          }
-
-          await qrScanner.start(
-            cameras[0].id,
-            config,
-            onScanSuccess,
-            () => {}
-          );
+        if (result?.ok && !options.silent && isMountedRef.current) {
+          setScannerSuccess('Student QR resolved successfully.');
+          setTimeout(() => {
+            if (!isMountedRef.current) return;
+            setShowScanner(false);
+            setScannerSuccess('');
+            setScannerError('');
+          }, 700);
         }
+
+        return result;
+      } catch (e) {
+        console.error('School QR resolve failed:', e);
+        if (!options.silent && isMountedRef.current) {
+          setScannerError(e?.message || 'Failed to resolve student QR.');
+        }
+        return { ok: false, error: e };
+      } finally {
+        if (isMountedRef.current) setScannerBusy(false);
       }
-    } catch (e) {
-      console.error('QR scanner start failed:', e);
-
-      const msg = String(e?.message || '');
-      if (
-        msg.includes('NotReadableError') ||
-        msg.includes('Could not start video source')
-      ) {
-        setScannerError(
-          'Camera is being used by another app like Discord, Zoom, or another browser tab. Please close it and try again.'
-        );
-      } else {
-        setScannerError(msg || 'Unable to start QR scanner.');
-      }
-    } finally {
-      setScannerLoading(false);
-      scannerStartingRef.current = false;
-    }
-  }, [resolveTokenIntoPendingLead, stopScanner]);
+    },
+    [scannerBusy, resolveTokenIntoPendingLead]
+  );
 
   useEffect(() => {
-    loadLeads();
-  }, [loadLeads]);
+    const url = new URL(window.location.href);
+    const token = (
+      url.searchParams.get('student_ref') ||
+      url.searchParams.get('ref') ||
+      ''
+    ).trim();
 
-  useEffect(() => {
-    resolvePendingQrLead();
-  }, [resolvePendingQrLead]);
+    if (!token) return;
+    if (!auth.currentUser?.uid) return;
+    if (handledUrlTokenRef.current === token) return;
 
-  useEffect(() => {
-    if (!showScanner) {
-      stopScanner();
-      return;
-    }
+    handledUrlTokenRef.current = token;
 
-    const timer = window.setTimeout(() => {
-      startQrScanner();
-    }, 120);
+    (async () => {
+      await handleSchoolQrSubmit(token, { silent: true });
+    })();
+  }, [handleSchoolQrSubmit]);
 
-    return () => {
-      window.clearTimeout(timer);
-      stopScanner();
-    };
-  }, [showScanner, startQrScanner, stopScanner]);
+  const filteredLeads = useMemo(() => {
+    return leads.filter((lead) => {
+      const term = (searchTerm || '').toLowerCase();
 
-  useEffect(() => {
-    return () => {
-      stopScanner();
-    };
-  }, [stopScanner]);
+      const visibleName = shouldMaskLeadInfo
+        ? maskName(lead.student?.full_name || lead.student_name || '')
+        : (lead.student?.full_name || lead.student_name || '');
 
-  const filteredLeads = leads.filter((lead) => {
-    const term = (searchTerm || '').toLowerCase();
+      const visibleEmail = shouldMaskLeadInfo
+        ? maskEmail(lead.student?.email || lead.student_email || '')
+        : (lead.student?.email || lead.student_email || '');
 
-    const visibleName = shouldMaskLeadInfo
-      ? maskName(lead.student?.full_name || lead.student_name || '')
-      : (lead.student?.full_name || lead.student_name || '');
+      const visiblePhone = shouldMaskLeadInfo
+        ? maskPhone(lead.student?.phone || lead.student_phone || '')
+        : (lead.student?.phone || lead.student_phone || '');
 
-    const visibleEmail = shouldMaskLeadInfo
-      ? maskEmail(lead.student?.email || lead.student_email || '')
-      : (lead.student?.email || lead.student_email || '');
+      const agentName = String(getAssignedAgentName(lead) || '').toLowerCase();
 
-    const visiblePhone = shouldMaskLeadInfo
-      ? maskPhone(lead.student?.phone || lead.student_phone || '')
-      : (lead.student?.phone || lead.student_phone || '');
-
-    const agentName = String(getAssignedAgentName(lead) || '').toLowerCase();
-
-    return (
-      visibleName.toLowerCase().includes(term) ||
-      visibleEmail.toLowerCase().includes(term) ||
-      visiblePhone.toLowerCase().includes(term) ||
-      agentName.includes(term)
-    );
-  });
+      return (
+        visibleName.toLowerCase().includes(term) ||
+        visibleEmail.toLowerCase().includes(term) ||
+        visiblePhone.toLowerCase().includes(term) ||
+        agentName.includes(term)
+      );
+    });
+  }, [leads, searchTerm, shouldMaskLeadInfo]);
 
   const stats = {
     totalLeads: leads.length,
@@ -767,7 +936,7 @@ export default function SchoolLeads() {
       setLeads(previousLeads);
       alert('Failed to update lead status to contacted.');
     } finally {
-      setUpdatingLeadId('');
+      if (isMountedRef.current) setUpdatingLeadId('');
     }
   };
 
@@ -788,22 +957,24 @@ export default function SchoolLeads() {
     try {
       const result = await acceptStudentQrLead(pendingQrToken);
 
-      setPendingQrLead(null);
-      setPendingQrToken('');
+      if (isMountedRef.current) {
+        setPendingQrLead(null);
+        setPendingQrToken('');
+      }
       removeStudentRefFromUrl();
 
-      if (result?.alreadyExists) {
-        setQrNotice('This student is already in your leads.');
-      } else {
-        setQrNotice('Student added to your leads.');
+      if (isMountedRef.current) {
+        setQrNotice(buildSchoolQrSuccessText(result));
       }
 
       await loadLeads();
     } catch (e) {
       console.error('Failed to accept QR lead:', e);
-      setErrorText(e?.message || 'Failed to add student to school leads.');
+      if (isMountedRef.current) {
+        setErrorText(e?.message || 'Failed to add student to school leads.');
+      }
     } finally {
-      setActingQrLead(false);
+      if (isMountedRef.current) setActingQrLead(false);
     }
   };
 
@@ -816,14 +987,15 @@ export default function SchoolLeads() {
 
   const handleOpenScanner = () => {
     setScannerError('');
+    setScannerSuccess('');
     setErrorText('');
     setShowScanner(true);
   };
 
-  const handleCloseScanner = async () => {
+  const handleCloseScanner = () => {
     setShowScanner(false);
     setScannerError('');
-    await stopScanner();
+    setScannerSuccess('');
   };
 
   if (loading) {
@@ -877,53 +1049,18 @@ export default function SchoolLeads() {
           </Card>
         )}
 
-        {showScanner && (
-          <Card className="mb-6 border-pink-200 shadow-md">
-            <CardContent className="p-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">Scan Student QR</h3>
-                  <p className="text-sm text-gray-600">
-                    Point your camera at the student QR code to load their details.
-                  </p>
-                </div>
+        {!!scannerError && !showScanner && (
+          <Card className="mb-6 border-red-200 bg-red-50">
+            <CardContent className="p-4 text-red-800 text-sm">
+              {scannerError}
+            </CardContent>
+          </Card>
+        )}
 
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={startQrScanner}
-                    disabled={scannerLoading}
-                  >
-                    {scannerLoading ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    ) : (
-                      <Camera className="w-4 h-4 mr-2" />
-                    )}
-                    Restart Scanner
-                  </Button>
-
-                  <Button variant="outline" onClick={handleCloseScanner}>
-                    Close
-                  </Button>
-                </div>
-              </div>
-
-              {scannerError ? (
-                <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {scannerError}
-                </div>
-              ) : null}
-
-              <div className="rounded-2xl border border-pink-100 bg-white p-4">
-                <div
-                  id={QR_READER_ID}
-                  className="w-full max-w-md mx-auto overflow-hidden rounded-xl"
-                />
-              </div>
-
-              <p className="text-xs text-gray-500 mt-3 text-center">
-                On mobile, allow camera access when prompted.
-              </p>
+        {!!scannerSuccess && !showScanner && (
+          <Card className="mb-6 border-green-200 bg-green-50">
+            <CardContent className="p-4 text-green-800 text-sm">
+              {scannerSuccess}
             </CardContent>
           </Card>
         )}
@@ -1203,6 +1340,15 @@ export default function SchoolLeads() {
             )}
           </CardContent>
         </Card>
+
+        <ScannerModal
+          open={showScanner}
+          onClose={handleCloseScanner}
+          onSubmitToken={handleSchoolQrSubmit}
+          busy={scannerBusy}
+          errorText={scannerError}
+          successText={scannerSuccess}
+        />
       </div>
     </div>
   );

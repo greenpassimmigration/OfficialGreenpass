@@ -58,13 +58,20 @@ async function linkAgentClient({ agentUid, studentUid, inviteId = "" }) {
 
       student_id: studentUid,
       studentId: studentUid,
+      client_id: studentUid,
+      clientId: studentUid,
 
+      status: "active",
       source: "invite",
       referralType: "invite",
+      acceptedByAgent: false,
+      assignmentLocked: false,
       inviteId: inviteId || "",
 
       created_at: serverTimestamp(),
       updated_at: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     },
     { merge: true }
   );
