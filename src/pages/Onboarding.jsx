@@ -78,6 +78,120 @@ function safeInternalPath(p) {
   return p;
 }
 
+const PENDING_REFERRAL_STORAGE_KEY = "gp_pending_referral_context";
+
+function cleanToken(value) {
+  return String(value || "").trim();
+}
+
+function hasReferralContext(ctx = {}) {
+  return Boolean(
+    cleanToken(ctx?.ref) ||
+      cleanToken(ctx?.student_ref) ||
+      cleanToken(ctx?.agent_ref) ||
+      cleanToken(ctx?.tutor_ref)
+  );
+}
+
+function persistReferralContext(ctx = {}) {
+  if (typeof window === "undefined" || !hasReferralContext(ctx)) return;
+
+  const payload = {};
+  if (cleanToken(ctx?.ref)) payload.ref = cleanToken(ctx.ref);
+  if (cleanToken(ctx?.student_ref)) payload.student_ref = cleanToken(ctx.student_ref);
+  if (cleanToken(ctx?.agent_ref)) payload.agent_ref = cleanToken(ctx.agent_ref);
+  if (cleanToken(ctx?.tutor_ref)) payload.tutor_ref = cleanToken(ctx.tutor_ref);
+  if (cleanToken(ctx?.role)) payload.role = cleanToken(ctx.role);
+
+  try {
+    window.sessionStorage.setItem(
+      PENDING_REFERRAL_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
+  } catch {}
+
+  try {
+    window.localStorage.setItem(
+      PENDING_REFERRAL_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
+  } catch {}
+}
+
+function readStoredReferralContext() {
+  if (typeof window === "undefined") return {};
+
+  let raw = "";
+  try {
+    raw = window.sessionStorage.getItem(PENDING_REFERRAL_STORAGE_KEY) || "";
+  } catch {}
+
+  if (!raw) {
+    try {
+      raw = window.localStorage.getItem(PENDING_REFERRAL_STORAGE_KEY) || "";
+    } catch {}
+  }
+
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      ref: cleanToken(parsed?.ref),
+      student_ref: cleanToken(parsed?.student_ref),
+      agent_ref: cleanToken(parsed?.agent_ref),
+      tutor_ref: cleanToken(parsed?.tutor_ref),
+      role: cleanToken(parsed?.role),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function buildReferralContextFromSearch(search) {
+  if (!search) return {};
+  return {
+    ref: cleanToken(search.get("ref")),
+    student_ref: cleanToken(search.get("student_ref")),
+    agent_ref: cleanToken(search.get("agent_ref")),
+    tutor_ref: cleanToken(search.get("tutor_ref")),
+    role: cleanToken(search.get("role") || search.get("userType")),
+  };
+}
+
+function getMergedReferralContext(current = {}) {
+  const stored = readStoredReferralContext();
+  const merged = {
+    ref: cleanToken(current?.ref) || cleanToken(stored?.ref),
+    student_ref: cleanToken(current?.student_ref) || cleanToken(stored?.student_ref),
+    agent_ref: cleanToken(current?.agent_ref) || cleanToken(stored?.agent_ref),
+    tutor_ref: cleanToken(current?.tutor_ref) || cleanToken(stored?.tutor_ref),
+    role: cleanToken(current?.role) || cleanToken(stored?.role),
+  };
+
+  if (hasReferralContext(merged)) {
+    persistReferralContext(merged);
+  }
+
+  return merged;
+}
+
+function clearStoredReferralContext() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
+  } catch {}
+  try {
+    window.localStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
+  } catch {}
+  try {
+    window.localStorage.removeItem("gp_collaborator_ref");
+    window.localStorage.removeItem("gp_agent_ref");
+    window.localStorage.removeItem("gp_tutor_ref");
+    window.localStorage.removeItem("gp_student_ref");
+  } catch {}
+}
+
 const STEPS = {
   CHOOSE_ROLE: "choose_role",
   BASIC_INFO: "basic_info",
@@ -428,22 +542,34 @@ export default function Onboarding() {
   const nextRaw = useMemo(() => params.get("next") || "", [params]);
   const next = useMemo(() => safeInternalPath(nextRaw), [nextRaw]);
 
+  const mergedReferralContext = useMemo(
+    () => getMergedReferralContext(buildReferralContextFromSearch(params)),
+    [params]
+  );
+
   const collaboratorRef = useMemo(() => {
-    const v = (params.get("ref") || "").toString().trim();
-    return v;
-  }, [params]);
+    return cleanToken(mergedReferralContext?.ref);
+  }, [mergedReferralContext]);
+
+  const agentRef = useMemo(() => {
+    return cleanToken(mergedReferralContext?.agent_ref);
+  }, [mergedReferralContext]);
+
+  const tutorRef = useMemo(() => {
+    return cleanToken(mergedReferralContext?.tutor_ref);
+  }, [mergedReferralContext]);
 
   const studentRef = useMemo(() => {
-    return (
-      (params.get("student_ref") || "").toString().trim() ||
-      (typeof window !== "undefined" ? localStorage.getItem("gp_student_ref") || "" : "")
-    );
-  }, [params]);
+    return cleanToken(mergedReferralContext?.student_ref);
+  }, [mergedReferralContext]);
 
   const urlRoleRaw = useMemo(() => {
-    const raw = params.get("role") ?? params.get("userType");
+    const raw =
+      params.get("role") ??
+      params.get("userType") ??
+      mergedReferralContext?.role;
     return raw && String(raw).trim() ? String(raw).trim() : null;
-  }, [params]);
+  }, [params, mergedReferralContext]);
 
   const collaboratorInviteFlow = useMemo(() => {
     const role = (urlRoleRaw || "").toString().trim().toLowerCase();
@@ -458,8 +584,9 @@ export default function Onboarding() {
   const urlLock = useMemo(() => {
     const v = (params.get("lock") || params.get("locked") || "").toString();
     if (collaboratorInviteFlow) return true;
+    if (agentRef || tutorRef) return true;
     return v === "1" || v.toLowerCase() === "true";
-  }, [params, collaboratorInviteFlow]);
+  }, [params, collaboratorInviteFlow, agentRef, tutorRef]);
 
   const sessionRoleRaw = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -482,10 +609,11 @@ export default function Onboarding() {
 
   const roleHintFromEntry = useMemo(() => {
     if (collaboratorInviteFlow) return "collaborator";
+    if (agentRef || tutorRef || studentRef) return "user";
     if (urlRole) return urlRole;
     if (sessionRole) return sessionRole;
     return DEFAULT_ROLE;
-  }, [urlRole, sessionRole, collaboratorInviteFlow]);
+  }, [urlRole, sessionRole, collaboratorInviteFlow, agentRef, tutorRef, studentRef]);
 
   const roleLockedFromEntry = useMemo(() => {
     if (collaboratorInviteFlow) return true;
@@ -544,12 +672,16 @@ export default function Onboarding() {
       if (collaboratorInviteFlow) {
         sessionStorage.setItem("onboarding_role", "collaborator");
         sessionStorage.setItem("onboarding_role_locked", "1");
+      } else if (agentRef || tutorRef || studentRef) {
+        sessionStorage.setItem("onboarding_role", "user");
+        sessionStorage.setItem("onboarding_role_locked", "1");
       }
-      if (studentRef) {
-        localStorage.setItem("gp_student_ref", studentRef);
+
+      if (hasReferralContext(mergedReferralContext)) {
+        persistReferralContext(mergedReferralContext);
       }
     } catch {}
-  }, [collaboratorInviteFlow, studentRef]);
+  }, [collaboratorInviteFlow, agentRef, tutorRef, studentRef, mergedReferralContext]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
@@ -667,6 +799,7 @@ export default function Onboarding() {
         try {
           sessionStorage.removeItem("onboarding_role_locked");
           sessionStorage.removeItem("onboarding_role");
+          clearStoredReferralContext();
         } catch {}
 
         navigate(
@@ -777,6 +910,7 @@ export default function Onboarding() {
       try {
         sessionStorage.removeItem("onboarding_role_locked");
         sessionStorage.removeItem("onboarding_role");
+        clearStoredReferralContext();
       } catch {}
 
       setTimeout(() => navigate(buildPolicyCenterUrl(studentRef), { replace: true }), 600);

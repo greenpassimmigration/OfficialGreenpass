@@ -963,18 +963,41 @@ export default function SchoolDetails() {
         return;
       }
 
+      let assignedAgentId = "";
+      let referredByAgentId = "";
+
+      try {
+        const meSnap = await getDoc(doc(db, "users", fbUser.uid));
+        const me = meSnap.exists() ? meSnap.data() : {};
+        assignedAgentId = String(me?.assigned_agent_id || "").trim();
+        referredByAgentId = String(me?.referred_by_agent_id || "").trim();
+      } catch (err) {
+        console.error("Failed to load student ownership info:", err);
+      }
+
+      const linkedAgentId = assignedAgentId || referredByAgentId || "";
+
       await addDoc(collection(db, "school_leads"), {
         school_id: school.id,
         institution_id: school.id,
         institutionId: school.id,
         school_name: school.name || "",
         school_owner_user_id: school.user_id || "",
+
         student_id: fbUser.uid,
         student_name: pickFirst(fbProfile?.full_name, fbUser.displayName, ""),
         student_email: fbUser.email || "",
         student_phone: pickFirst(fbProfile?.phone, ""),
+
         status: "interested",
         source: "school_details",
+        lead_type: "school_details",
+        schoolLeadType: "school_details",
+
+        linked_agent_id: linkedAgentId || null,
+        assigned_agent_id: assignedAgentId || null,
+        referred_by_agent_id: referredByAgentId || null,
+
         created_at: serverTimestamp(),
         updated_at: serverTimestamp(),
       });

@@ -82,6 +82,120 @@ const FUNCTIONS_BASE =
   import.meta.env.VITE_FUNCTIONS_HTTP_BASE ||
   "https://us-central1-greenpass-dc92d.cloudfunctions.net";
 
+const PENDING_REFERRAL_STORAGE_KEY = "gp_pending_referral_context";
+
+function cleanToken(value) {
+  return String(value || "").trim();
+}
+
+function hasReferralContext(ctx = {}) {
+  return Boolean(
+    cleanToken(ctx?.ref) ||
+      cleanToken(ctx?.student_ref) ||
+      cleanToken(ctx?.agent_ref) ||
+      cleanToken(ctx?.tutor_ref)
+  );
+}
+
+function persistReferralContext(ctx = {}) {
+  if (typeof window === "undefined" || !hasReferralContext(ctx)) return;
+
+  const payload = {};
+  if (cleanToken(ctx?.ref)) payload.ref = cleanToken(ctx.ref);
+  if (cleanToken(ctx?.student_ref)) payload.student_ref = cleanToken(ctx.student_ref);
+  if (cleanToken(ctx?.agent_ref)) payload.agent_ref = cleanToken(ctx.agent_ref);
+  if (cleanToken(ctx?.tutor_ref)) payload.tutor_ref = cleanToken(ctx.tutor_ref);
+  if (cleanToken(ctx?.role)) payload.role = cleanToken(ctx.role);
+
+  try {
+    window.sessionStorage.setItem(
+      PENDING_REFERRAL_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
+  } catch {}
+
+  try {
+    window.localStorage.setItem(
+      PENDING_REFERRAL_STORAGE_KEY,
+      JSON.stringify(payload)
+    );
+  } catch {}
+}
+
+function readStoredReferralContext() {
+  if (typeof window === "undefined") return {};
+
+  let raw = "";
+  try {
+    raw = window.sessionStorage.getItem(PENDING_REFERRAL_STORAGE_KEY) || "";
+  } catch {}
+
+  if (!raw) {
+    try {
+      raw = window.localStorage.getItem(PENDING_REFERRAL_STORAGE_KEY) || "";
+    } catch {}
+  }
+
+  if (!raw) return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      ref: cleanToken(parsed?.ref),
+      student_ref: cleanToken(parsed?.student_ref),
+      agent_ref: cleanToken(parsed?.agent_ref),
+      tutor_ref: cleanToken(parsed?.tutor_ref),
+      role: cleanToken(parsed?.role),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function buildReferralContextFromSearch(search) {
+  if (!search) return {};
+  return {
+    ref: cleanToken(search.get("ref")),
+    student_ref: cleanToken(search.get("student_ref")),
+    agent_ref: cleanToken(search.get("agent_ref")),
+    tutor_ref: cleanToken(search.get("tutor_ref")),
+    role: cleanToken(search.get("role") || search.get("userType")),
+  };
+}
+
+function getMergedReferralContext(current = {}) {
+  const stored = readStoredReferralContext();
+  const merged = {
+    ref: cleanToken(current?.ref) || cleanToken(stored?.ref),
+    student_ref: cleanToken(current?.student_ref) || cleanToken(stored?.student_ref),
+    agent_ref: cleanToken(current?.agent_ref) || cleanToken(stored?.agent_ref),
+    tutor_ref: cleanToken(current?.tutor_ref) || cleanToken(stored?.tutor_ref),
+    role: cleanToken(current?.role) || cleanToken(stored?.role),
+  };
+
+  if (hasReferralContext(merged)) {
+    persistReferralContext(merged);
+  }
+
+  return merged;
+}
+
+function clearStoredReferralContext() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
+  } catch {}
+  try {
+    window.localStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
+  } catch {}
+  try {
+    window.localStorage.removeItem("gp_collaborator_ref");
+    window.localStorage.removeItem("gp_agent_ref");
+    window.localStorage.removeItem("gp_tutor_ref");
+    window.localStorage.removeItem("gp_student_ref");
+  } catch {}
+}
+
 function normalizeRole(r) {
   const v = (r || "").toString().trim().toLowerCase();
   return VALID_ROLES.includes(v) ? v : DEFAULT_ROLE;
@@ -498,29 +612,11 @@ export default function Welcome() {
     if (i18n?.language !== nextLang) i18n.changeLanguage(nextLang);
     localStorage.setItem("gp_lang", nextLang);
 
-    const collaboratorRef = (params.get("ref") || "").trim();
-    const rawRole = (params.get("role") || params.get("userType") || "")
-      .toString()
-      .trim()
-      .toLowerCase();
-    const agentRef = (params.get("agent_ref") || "").trim();
-    const tutorRef = (params.get("tutor_ref") || "").trim();
-    const studentRef = (params.get("student_ref") || "").trim();
-
-    if (rawRole === "collaborator" && collaboratorRef) {
-      localStorage.setItem("gp_collaborator_ref", collaboratorRef);
-    }
-
-    if (agentRef) {
-      localStorage.setItem("gp_agent_ref", agentRef);
-    }
-
-    if (tutorRef) {
-      localStorage.setItem("gp_tutor_ref", tutorRef);
-    }
-
-    if (studentRef) {
-      localStorage.setItem("gp_student_ref", studentRef);
+    const currentReferral = buildReferralContextFromSearch(params);
+    if (hasReferralContext(currentReferral)) {
+      persistReferralContext(currentReferral);
+    } else {
+      getMergedReferralContext(currentReferral);
     }
   }, [params, i18n]);
 
@@ -549,15 +645,13 @@ export default function Welcome() {
   }, [params]);
 
   const referralContext = useMemo(() => {
+    const merged = getMergedReferralContext(buildReferralContextFromSearch(params));
     return {
-      collaboratorRef:
-        params.get("ref") || localStorage.getItem("gp_collaborator_ref") || "",
-      agentRef:
-        params.get("agent_ref") || localStorage.getItem("gp_agent_ref") || "",
-      tutorRef:
-        params.get("tutor_ref") || localStorage.getItem("gp_tutor_ref") || "",
-      studentRef:
-        params.get("student_ref") || localStorage.getItem("gp_student_ref") || "",
+      collaboratorRef: merged.ref || "",
+      agentRef: merged.agent_ref || "",
+      tutorRef: merged.tutor_ref || "",
+      studentRef: merged.student_ref || "",
+      role: merged.role || "",
     };
   }, [params]);
 
@@ -569,12 +663,12 @@ export default function Welcome() {
     return normalizeRole(raw);
   }, [params, collaboratorInviteFlow, agentInviteFlow, tutorInviteFlow]);
 
-  const forcedSignupFlow = collaboratorInviteFlow || agentInviteFlow || tutorInviteFlow;
+  const forcedSignupFlow = collaboratorInviteFlow || agentInviteFlow || tutorInviteFlow || studentScanFlow;
 
   const [mode, setMode] = useState(forcedSignupFlow ? "signup" : "signin");
   const [signupRole, setSignupRole] = useState(() => {
     if (collaboratorInviteFlow) return "collaborator";
-    if (agentInviteFlow || tutorInviteFlow) return "user";
+    if (agentInviteFlow || tutorInviteFlow || studentScanFlow) return "user";
     return entryRole && entryRole !== DEFAULT_ROLE ? entryRole : "";
   });
 
@@ -588,15 +682,22 @@ export default function Welcome() {
       return;
     }
 
-    if (agentInviteFlow || tutorInviteFlow) {
+    if (agentInviteFlow || tutorInviteFlow || studentScanFlow) {
       setMode("signup");
       setSignupRole("user");
     }
-  }, [collaboratorInviteFlow, agentInviteFlow, tutorInviteFlow]);
+  }, [collaboratorInviteFlow, agentInviteFlow, tutorInviteFlow, studentScanFlow]);
 
   useEffect(() => {
-    if (activeRole) sessionStorage.setItem("onboarding_role", activeRole);
-  }, [activeRole]);
+    if (!activeRole) return;
+
+    sessionStorage.setItem("onboarding_role", activeRole);
+    if (forcedSignupFlow) {
+      sessionStorage.setItem("onboarding_role_locked", "1");
+    } else {
+      sessionStorage.removeItem("onboarding_role_locked");
+    }
+  }, [activeRole, forcedSignupFlow]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

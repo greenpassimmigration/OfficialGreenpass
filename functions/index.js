@@ -1701,8 +1701,33 @@ async function acceptStudentReferralInternal({
     const existingAssignedAgentId = student.assigned_agent_id || null;
     const existingReferredByAgentId = student.referred_by_agent_id || null;
 
-    const assignmentLocked =
+    const ownershipLocked =
       !!existingAssignedAgentId && String(existingAssignedAgentId) !== String(uid);
+
+    if (ownershipLocked) {
+      await writeQrScanLog({
+        token: referralToken,
+        tokenType: "student",
+        studentId,
+        schoolId: null,
+        scannedBy: uid,
+        result: "blocked_locked_agent",
+        duplicate: false,
+        leadId: relationId,
+        meta: {
+          scannerRole,
+          scannerEntityType,
+          forcedTargetRole: forcedTargetRole || null,
+          targetCollection: "agent_clients",
+          existingAssignedAgentId,
+          attemptedAgentId: uid,
+        },
+      });
+
+      const err = new Error("This student is already assigned to another agent");
+      err.statusCode = 409;
+      throw err;
+    }
 
     let alreadyExists = false;
 
@@ -1714,11 +1739,14 @@ async function acceptStudentReferralInternal({
         relationRef,
         {
           agentId: uid,
+          agent_id: uid,
           studentId,
+          student_id: studentId,
+          client_id: studentId,
           status: "active",
           source: "student_qr",
           acceptedByAgent: true,
-          assignmentLocked,
+          assignmentLocked: false,
           createdAt: relationSnap.exists
             ? relationSnap.data()?.createdAt || admin.firestore.FieldValue.serverTimestamp()
             : admin.firestore.FieldValue.serverTimestamp(),
@@ -1786,7 +1814,7 @@ async function acceptStudentReferralInternal({
         scannerEntityType,
         forcedTargetRole: forcedTargetRole || null,
         targetCollection: "agent_clients",
-        assignmentLocked,
+        ownershipLocked: false,
       },
     });
 
@@ -1797,7 +1825,7 @@ async function acceptStudentReferralInternal({
       targetCollection: "agent_clients",
       relationId,
       alreadyExists,
-      assignmentLocked,
+      ownershipLocked: false,
       student: sanitizeStudentPublic({ id: studentId, ...student }),
       agent: {
         agentId: uid,

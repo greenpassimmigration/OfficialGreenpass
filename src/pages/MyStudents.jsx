@@ -178,10 +178,6 @@ function buildSuccessText(data) {
     successText = `${data.student.full_name} added to your client list.`;
   }
 
-  if (data?.assignmentLocked) {
-    successText += " Existing assigned agent was not changed.";
-  }
-
   return successText;
 }
 
@@ -538,7 +534,13 @@ export default function MyStudents() {
         const data = await res.json().catch(() => ({}));
 
         if (!res.ok) {
-          throw new Error(data?.error || "Failed to add student.");
+          const message = data?.error || "Failed to add student.";
+
+          if (message.includes("already assigned to another agent")) {
+            throw new Error("This student is already locked to another agent.");
+          }
+
+          throw new Error(message);
         }
 
         if (!isMountedRef.current) return;
