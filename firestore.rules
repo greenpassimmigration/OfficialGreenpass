@@ -9,9 +9,10 @@ service cloud.firestore {
       return signedIn() &&
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
              (
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.user_type == t ||
-               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.selected_role == t ||
                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == t ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.selected_role == t ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.user_type == t ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == t ||
                (t == "admin" && (
                  get(/databases/$(database)/documents/users/$(request.auth.uid)).data.is_admin == true ||
                  get(/databases/$(database)/documents/users/$(request.auth.uid)).data.admin == true
@@ -107,7 +108,10 @@ service cloud.firestore {
     function isStudentOfAgent(agentRes) {
       return signedIn() &&
              exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assigned_agent_id == agentRes.data.user_id;
+             (
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assigned_agent_id == agentRes.data.user_id ||
+               get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedAgentId == agentRes.data.user_id
+             );
     }
 
     function canAccessReservation(resvRes) {
@@ -770,21 +774,24 @@ service cloud.firestore {
 
     match /VisaDocument/{docId} {
       allow create: if ownerCreating();
-      allow read, update, delete: if isOwner(resource) || isAdmin();
-    }
-    match /visaDocuments/{docId} {
-      allow create: if ownerCreating();
-      allow read, update, delete: if isOwner(resource) || isAdmin();
-    }
-    match /visa_documents/{docId} {
-      allow create: if ownerCreating();
-      allow read, update, delete: if isOwner(resource) || isAdmin();
+      allow read, update, delete: if isOwner(resource);
     }
 
-    match /visaPackages/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
-    match /VisaPackages/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
-    match /visa_packages/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
-    match /tutor_packages/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
+    match /visa_documents/{docId} {
+      allow create: if ownerCreating();
+      allow read, update, delete: if isOwner(resource);
+    }
+
+    match /visa_requests/{docId} {
+      allow create: if signedIn() && request.resource.data.student_id == request.auth.uid;
+      allow read, update, delete: if signedIn() && resource.data.student_id == request.auth.uid;
+    }
+
+    match /visa_request/{docId} {
+      allow create: if signedIn() && request.resource.data.student_id == request.auth.uid;
+      allow read, update, delete: if signedIn() && resource.data.student_id == request.auth.uid;
+    }
+
     match /student_tutor_packages/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
 
     match /VisaRequest/{docId} {
@@ -805,10 +812,6 @@ service cloud.firestore {
     match /mail/{docId} {
       allow create: if isAdmin();
       allow read, update, delete: if false;
-    }
-
-    match /invites/{inviteId} {
-      allow read, write: if false;
     }
 
     match /promotions/{id} {
@@ -1479,35 +1482,6 @@ service cloud.firestore {
       );
     }
 
-    match /tutor_availability/{docId} {
-      allow read: if signedIn() && (docId == request.auth.uid || isAdmin());
-      allow create, update, delete: if signedIn() &&
-        docId == request.auth.uid &&
-        request.resource.data.tutorId == request.auth.uid;
-    }
-
-    match /tutor_blocked_times/{docId} {
-      allow read: if signedIn() && (
-        resource.data.tutorId == request.auth.uid || isAdmin()
-      );
-      allow create: if signedIn() &&
-        request.resource.data.tutorId == request.auth.uid;
-      allow update, delete: if signedIn() && (
-        resource.data.tutorId == request.auth.uid || isAdmin()
-      );
-    }
-
-    match /tutor_planner_notes/{docId} {
-      allow read: if signedIn() && (
-        resource.data.tutorId == request.auth.uid || isAdmin()
-      );
-      allow create: if signedIn() &&
-        request.resource.data.tutorId == request.auth.uid;
-      allow update, delete: if signedIn() && (
-        resource.data.tutorId == request.auth.uid || isAdmin()
-      );
-    }
-
     // ✅ Agent document checklist per client
     // Collection: agent_client_checklists/{agentId}_{clientId}
     // Fields: { agent_id/client_id OR agentId/clientId, documents: [{id,name,submitted,...}], ... }
@@ -1670,47 +1644,6 @@ service cloud.firestore {
 
       allow update, delete: if signedIn() && (
         resource.data.author_id == request.auth.uid || isAdmin()
-      );
-    }
-
-    match /tutor_availability/{docId} {
-      allow read: if signedIn() && (
-        docId == request.auth.uid ||
-        isAdmin()
-      );
-
-      allow create, update, delete: if signedIn() &&
-        docId == request.auth.uid &&
-        request.resource.data.tutorId == request.auth.uid;
-    }
-
-    match /tutor_blocked_times/{docId} {
-      allow read: if signedIn() && (
-        resource.data.tutorId == request.auth.uid ||
-        isAdmin()
-      );
-
-      allow create: if signedIn() &&
-        request.resource.data.tutorId == request.auth.uid;
-
-      allow update, delete: if signedIn() && (
-        resource.data.tutorId == request.auth.uid ||
-        isAdmin()
-      );
-    }
-
-    match /tutor_planner_notes/{docId} {
-      allow read: if signedIn() && (
-        resource.data.tutorId == request.auth.uid ||
-        isAdmin()
-      );
-
-      allow create: if signedIn() &&
-        request.resource.data.tutorId == request.auth.uid;
-
-      allow update, delete: if signedIn() && (
-        resource.data.tutorId == request.auth.uid ||
-        isAdmin()
       );
     }
 

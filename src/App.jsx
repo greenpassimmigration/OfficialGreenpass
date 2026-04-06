@@ -10,10 +10,8 @@ import Dashboard from "@/pages/Dashboard";
 import EventsPage from "@/pages/Events";
 import Onboarding from "./pages/Onboarding";
 import Connect from "@/pages/Connect";
-import MyAgent from "@/pages/MyAgent";
 import Tutors from "@/pages/Tutors";
 import MySessions from "@/pages/MySessions";
-import AgentLeads from "@/pages/AgentLeads";
 import TutorStudents from "@/pages/TutorStudents";
 import TutorSessions from "@/pages/TutorSessions";
 import TutorAvailability from "@/pages/TutorAvailability";
@@ -305,14 +303,6 @@ export default function App() {
 
         {/* Student-only */}
         <Route
-          path="myagent"
-          element={
-            <RequireRole currentUser={currentUser} loading={loading} allow={["student", "user"]}>
-              <MyAgent />
-            </RequireRole>
-          }
-        />
-        <Route
           path="mysessions"
           element={
             <RequireRole currentUser={currentUser} loading={loading} allow={["student", "user"]}>
@@ -335,14 +325,6 @@ export default function App() {
           element={
             <RequireRole currentUser={currentUser} loading={loading} allow={["agent"]}>
               <AgentAgreement />
-            </RequireRole>
-          }
-        />
-        <Route
-          path="agentleads"
-          element={
-            <RequireRole currentUser={currentUser} loading={loading} allow={["agent"]}>
-              <AgentLeads />
             </RequireRole>
           }
         />

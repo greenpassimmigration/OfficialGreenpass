@@ -612,7 +612,7 @@ async function recalculateCollaboratorStats(collaboratorUid) {
       collaborator_verified_users: verified,
       collaborator_estimated_rewards: estimatedRewards,
       collaborator_tier: tier,
-      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     },
     { merge: true }
   );
@@ -649,11 +649,11 @@ async function syncCollaboratorReferralForUser(userId, beforeData = {}, afterDat
     status,
     completed_profile: onboardingCompleted,
     verified,
-    updated_at: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  if (afterData?.created_at || beforeData?.created_at) {
-    payload.referred_user_created_at = afterData?.created_at || beforeData?.created_at;
+  if (afterData?.createdAt || beforeData?.createdAt) {
+    payload.referred_user_created_at = afterData?.createdAt || beforeData?.createdAt;
   }
 
   if (afterData?.referred_by_collaborator_at || beforeData?.referred_by_collaborator_at) {
@@ -662,11 +662,11 @@ async function syncCollaboratorReferralForUser(userId, beforeData = {}, afterDat
   }
 
   if (onboardingCompleted) {
-    payload.completed_at = afterData?.updated_at || admin.firestore.FieldValue.serverTimestamp();
+    payload.completed_at = afterData?.updatedAt || admin.firestore.FieldValue.serverTimestamp();
   }
 
   if (verified) {
-    payload.verified_at = afterData?.updated_at || admin.firestore.FieldValue.serverTimestamp();
+    payload.verified_at = afterData?.updatedAt || admin.firestore.FieldValue.serverTimestamp();
   }
 
   await referralRef.set(payload, { merge: true });
@@ -751,9 +751,8 @@ function sanitizeStudentPublic(studentDoc) {
     full_name: pickDisplayName(studentDoc),
     email: pickEmail(studentDoc),
     phone: pickPhone(studentDoc),
-    assigned_agent_id: studentDoc.assigned_agent_id || studentDoc.assignedAgentId || null,
-    referred_by_agent_id:
-      studentDoc.referred_by_agent_id || studentDoc.referredByAgentId || null,
+    assigned_agent_id: studentDoc.assigned_agent_id || null,
+    referred_by_agent_id: studentDoc.referred_by_agent_id || null,
     onboarding_completed: onboardingCompleted,
     profile_completed: onboardingCompleted,
     qr_ready: onboardingCompleted,
@@ -892,7 +891,7 @@ exports.getMyAgentReferralToken = onRequest(async (req, res) => {
         await userRef.set(
           {
             referralQrToken: token,
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -936,7 +935,7 @@ exports.getMyTutorReferralToken = onRequest(async (req, res) => {
         await userRef.set(
           {
             tutorReferralQrToken: token,
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -1134,20 +1133,10 @@ exports.acceptAgentReferral = onRequest(async (req, res) => {
         tx.set(
           userRef,
           {
-            referred_by_agent_id:
-              student.referred_by_agent_id ||
-              student.referredByAgentId ||
-              agentId,
-            assigned_agent_id:
-              student.assigned_agent_id ||
-              student.assignedAgentId ||
-              agentId,
-            referredByAgentId:
-              student.referredByAgentId ||
-              student.referred_by_agent_id ||
-              agentId,
+            referred_by_agent_id: student.referred_by_agent_id || agentId,
+            assigned_agent_id: student.assigned_agent_id || agentId,
             referralType: "qr",
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -1287,17 +1276,10 @@ exports.acceptTutorReferral = onRequest(async (req, res) => {
         tx.set(
           userRef,
           {
-            referred_by_tutor_id:
-              student.referred_by_tutor_id ||
-              student.referredByTutorId ||
-              tutorId,
-            referredByTutorId:
-              student.referredByTutorId ||
-              student.referred_by_tutor_id ||
-              tutorId,
+            referred_by_tutor_id: student.referred_by_tutor_id || tutorId,
             tutor_student_status: "active",
             tutorReferralType: "qr",
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -1379,7 +1361,7 @@ exports.getMyStudentReferralToken = onRequest(async (req, res) => {
         await userRef.set(
           {
             studentReferralQrToken: token,
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -1597,9 +1579,7 @@ async function acceptStudentReferralInternal({
 
     const linkedAgentId =
       student.assigned_agent_id ||
-      student.assignedAgentId ||
       student.referred_by_agent_id ||
-      student.referredByAgentId ||
       null;
 
     const leadPayloadBase = {
@@ -1618,9 +1598,8 @@ async function acceptStudentReferralInternal({
       schoolLeadType: "qr",
 
       linked_agent_id: linkedAgentId || null,
-      assigned_agent_id: student.assigned_agent_id || student.assignedAgentId || null,
-      referred_by_agent_id:
-        student.referred_by_agent_id || student.referredByAgentId || null,
+      assigned_agent_id: student.assigned_agent_id || null,
+      referred_by_agent_id: student.referred_by_agent_id || null,
     };
 
     let alreadyExists = false;
@@ -1649,7 +1628,7 @@ async function acceptStudentReferralInternal({
           assigned_school_id: schoolId,
           referredToSchoolId: schoolId,
           schoolLeadType: "qr",
-          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -1719,10 +1698,8 @@ async function acceptStudentReferralInternal({
     const relationRef = db.collection("agent_clients").doc(relationId);
     const studentRef = db.collection("users").doc(studentId);
 
-    const existingAssignedAgentId =
-      student.assigned_agent_id || student.assignedAgentId || null;
-    const existingReferredByAgentId =
-      student.referred_by_agent_id || student.referredByAgentId || null;
+    const existingAssignedAgentId = student.assigned_agent_id || null;
+    const existingReferredByAgentId = student.referred_by_agent_id || null;
 
     const assignmentLocked =
       !!existingAssignedAgentId && String(existingAssignedAgentId) !== String(uid);
@@ -1751,17 +1728,15 @@ async function acceptStudentReferralInternal({
       );
 
       const studentUpdate = {
-        updated_at: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
 
       if (!existingReferredByAgentId) {
         studentUpdate.referred_by_agent_id = uid;
-        studentUpdate.referredByAgentId = uid;
       }
 
       if (!existingAssignedAgentId) {
         studentUpdate.assigned_agent_id = uid;
-        studentUpdate.assignedAgentId = uid;
       }
 
       tx.set(studentRef, studentUpdate, { merge: true });
@@ -1861,7 +1836,7 @@ async function acceptStudentReferralInternal({
       tx.set(
         studentRef,
         {
-          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -2060,7 +2035,6 @@ exports.acceptStudentReferralToTutor = onRequest(async (req, res) => {
     }
   });
 });
-
 
 function randomCode(len = 48) {
   return crypto.randomBytes(len).toString("hex");
@@ -2388,9 +2362,6 @@ exports.acceptInvite = onRequest(async (req, res) => {
             userRef,
             {
               role: safeBaseRole,
-              selected_role: safeBaseRole,
-              user_type: safeBaseRole,
-              userType: safeBaseRole,
 
               is_collaborator: true,
               collaborator_status: "approved",
@@ -2415,7 +2386,7 @@ exports.acceptInvite = onRequest(async (req, res) => {
                 inviteId,
               },
 
-              updated_at: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               email: authedEmail || admin.firestore.FieldValue.delete(),
             },
             { merge: true }
@@ -2428,9 +2399,6 @@ exports.acceptInvite = onRequest(async (req, res) => {
 
           const userPayload = {
             role: invitedRole,
-            selected_role: invitedRole,
-            user_type: invitedRole,
-            userType: invitedRole,
             onboarding_completed: false,
             onboarding_step: "basic_info",
             invited_by: {
@@ -2438,16 +2406,13 @@ exports.acceptInvite = onRequest(async (req, res) => {
               role: inv.inviterRole || "",
               inviteId,
             },
-            updated_at: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             email: authedEmail || admin.firestore.FieldValue.delete(),
           };
 
-          // 🔥 MAIN FIX HERE
           if (isAgentInvitingStudent) {
             userPayload.assigned_agent_id = inviterId;
-            userPayload.assignedAgentId = inviterId;
             userPayload.referred_by_agent_id = inviterId;
-            userPayload.referredByAgentId = inviterId;
             userPayload.referralType = "invite";
           }
 

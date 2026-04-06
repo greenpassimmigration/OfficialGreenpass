@@ -54,22 +54,14 @@ async function linkAgentClient({ agentUid, studentUid, inviteId = "" }) {
     doc(db, "agent_clients", relId),
     {
       agent_id: agentUid,
-      agentId: agentUid,
-
       student_id: studentUid,
-      studentId: studentUid,
       client_id: studentUid,
-      clientId: studentUid,
-
       status: "active",
       source: "invite",
       referralType: "invite",
       acceptedByAgent: false,
       assignmentLocked: false,
       inviteId: inviteId || "",
-
-      created_at: serverTimestamp(),
-      updated_at: serverTimestamp(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     },
@@ -347,8 +339,6 @@ function buildUserDefaults({
     role: finalRole,
     email,
     full_name,
-    user_type: finalRole,
-    userType: finalRole,
     signup_entry_role: finalRole,
     phone: "",
     country: "",
@@ -359,7 +349,6 @@ function buildUserDefaults({
     is_verified: false,
     onboarding_completed: false,
     onboarding_step: finalRole === "collaborator" ? STEPS.BASIC_INFO : STEPS.CHOOSE_ROLE,
-    selected_role: finalRole,
 
     subscription_active: false,
     subscription_status: "none",
@@ -370,8 +359,8 @@ function buildUserDefaults({
 
     ...collaboratorFields,
 
-    created_at: serverTimestamp(),
-    updated_at: serverTimestamp(),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
   };
 }
 
@@ -565,7 +554,12 @@ export default function Onboarding() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
-        navigate(studentRef ? `${createPageUrl("Welcome")}?student_ref=${encodeURIComponent(studentRef)}` : createPageUrl("Welcome"), { replace: true });
+        navigate(
+          studentRef
+            ? `${createPageUrl("Welcome")}?student_ref=${encodeURIComponent(studentRef)}`
+            : createPageUrl("Welcome"),
+          { replace: true }
+        );
         return;
       }
 
@@ -592,14 +586,14 @@ export default function Onboarding() {
       setProfile(data);
 
       const profileRoleRaw =
-        data.selected_role || data.user_type || data.userType || data.role || DEFAULT_ROLE;
+        data.role || data.selected_role || data.user_type || data.userType || DEFAULT_ROLE;
 
       const roleFromProfile = collaboratorInviteFlow
         ? "collaborator"
         : normalizeRole(profileRoleRaw);
 
       const hasRoleInProfile = Boolean(
-        data.selected_role || data.user_type || data.userType || data.role
+        data.role || data.selected_role || data.user_type || data.userType
       );
 
       setSkipChooseRole(entryRoleLocked || hasRoleInProfile);
@@ -612,9 +606,6 @@ export default function Onboarding() {
       if (entryRoleLocked && nextStep === STEPS.CHOOSE_ROLE) {
         nextStep = STEPS.BASIC_INFO;
         await updateDoc(ref, {
-          selected_role: effectiveRole,
-          user_type: effectiveRole,
-          userType: effectiveRole,
           role: effectiveRole,
           signup_entry_role: effectiveRole,
           onboarding_step: STEPS.BASIC_INFO,
@@ -626,25 +617,22 @@ export default function Onboarding() {
                   data.referred_by_collaborator_at || serverTimestamp(),
               }
             : {}),
-          updated_at: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         });
       } else if (!entryRoleLocked && hasRoleInProfile && nextStep === STEPS.CHOOSE_ROLE) {
         nextStep = STEPS.BASIC_INFO;
-        await updateDoc(ref, { onboarding_step: STEPS.BASIC_INFO, updated_at: serverTimestamp() });
+        await updateDoc(ref, { onboarding_step: STEPS.BASIC_INFO, updatedAt: serverTimestamp() });
       } else {
         const needsRoleSync =
           entryRoleLocked &&
-          (data.selected_role !== effectiveRole ||
-            data.user_type !== effectiveRole ||
-            data.userType !== effectiveRole ||
-            data.role !== effectiveRole ||
+          (data.role !== effectiveRole ||
             data.signup_entry_role !== effectiveRole);
 
-        if (needsRoleSync || (collaboratorInviteFlow && collaboratorRef && !data.referred_by_collaborator_code)) {
+        if (
+          needsRoleSync ||
+          (collaboratorInviteFlow && collaboratorRef && !data.referred_by_collaborator_code)
+        ) {
           await updateDoc(ref, {
-            selected_role: effectiveRole,
-            user_type: effectiveRole,
-            userType: effectiveRole,
             role: effectiveRole,
             signup_entry_role: effectiveRole,
             ...(collaboratorInviteFlow && collaboratorRef
@@ -655,7 +643,7 @@ export default function Onboarding() {
                     data.referred_by_collaborator_at || serverTimestamp(),
                 }
               : {}),
-            updated_at: serverTimestamp(),
+            updatedAt: serverTimestamp(),
           });
         }
       }
@@ -705,13 +693,10 @@ export default function Onboarding() {
     if (auth.currentUser) {
       const ref = doc(db, "users", auth.currentUser.uid);
       await updateDoc(ref, {
-        selected_role: roleType,
-        user_type: roleType,
-        userType: roleType,
         role: roleType,
         signup_entry_role: roleType,
         onboarding_step: STEPS.BASIC_INFO,
-        updated_at: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
     }
   };
@@ -737,7 +722,7 @@ export default function Onboarding() {
       const updates = {
         onboarding_completed: true,
         onboarding_step: STEPS.COMPLETE,
-        updated_at: serverTimestamp(),
+        updatedAt: serverTimestamp(),
 
         subscription_active: Boolean(subscriptionActive),
         subscription_status: subscriptionActive ? "active" : skipped ? "skipped" : "none",
@@ -760,7 +745,6 @@ export default function Onboarding() {
 
       await updateDoc(ref, updates);
 
-      // Link invited student to agent_clients
       try {
         const userSnap = await getDoc(ref);
         const userData = userSnap.data() || {};
@@ -822,9 +806,6 @@ export default function Onboarding() {
         phone: formData.phone || "",
         country: formData.country || "",
         country_code: formData.country_code || "",
-        selected_role: selectedRole,
-        user_type: selectedRole,
-        userType: selectedRole,
         role: selectedRole,
         signup_entry_role: selectedRole,
         ...(selectedRole === "collaborator" && collaboratorRef
@@ -833,7 +814,7 @@ export default function Onboarding() {
               referred_by_collaborator_at: serverTimestamp(),
             }
           : {}),
-        updated_at: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
     }
 
@@ -864,7 +845,7 @@ export default function Onboarding() {
     setCurrentStep(nextStep);
     if (auth.currentUser) {
       const ref = doc(db, "users", auth.currentUser.uid);
-      await updateDoc(ref, { onboarding_step: nextStep, updated_at: serverTimestamp() });
+      await updateDoc(ref, { onboarding_step: nextStep, updatedAt: serverTimestamp() });
     }
   };
 

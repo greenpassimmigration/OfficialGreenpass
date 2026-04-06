@@ -101,7 +101,7 @@ function buildCollaboratorReferralFields(refCode = "", referredByUid = "") {
 function buildUserDoc({
   email,
   full_name = "",
-  userType = DEFAULT_ROLE,
+  role = DEFAULT_ROLE,
   signupEntryRole = DEFAULT_ROLE,
   collaboratorRef = "",
   referredByCollaboratorUid = "",
@@ -111,9 +111,7 @@ function buildUserDoc({
   tutorStudentStatus = "",
 }) {
   return {
-    role: userType,
-    userType,
-    user_type: userType,
+    role,
     signup_entry_role: signupEntryRole,
     email,
     full_name,
@@ -135,7 +133,12 @@ function buildUserDoc({
     schoolId: "",
     programId: "",
     enrollment_date: null,
-    agent_reassignment_request: { requested_at: null, reason: "", new_agent_id: "", status: "pending" },
+    agent_reassignment_request: {
+      requested_at: null,
+      reason: "",
+      new_agent_id: "",
+      status: "pending",
+    },
     settings: {
       language: "en",
       timezone: "Asia/Ho_Chi_Minh",
@@ -150,9 +153,9 @@ function buildUserDoc({
     },
     package_assignment: { package_id: "", assigned_at: null, expires_at: null },
     is_guest_created: false,
-    created_at: serverTimestamp(),
+    createdAt: serverTimestamp(),
     ...buildCollaboratorReferralFields(collaboratorRef, referredByCollaboratorUid),
-    updated_at: serverTimestamp(),
+    updatedAt: serverTimestamp(),
   };
 }
 
@@ -161,7 +164,13 @@ function validatePassword(pw) {
   const hasUpper = /[A-Z]/.test(pw);
   const hasNumber = /[0-9]/.test(pw);
   const hasSpecial = /[^A-Za-z0-9]/.test(pw);
-  return { lengthOK, hasUpper, hasNumber, hasSpecial, ok: lengthOK && hasUpper && hasNumber && hasSpecial };
+  return {
+    lengthOK,
+    hasUpper,
+    hasNumber,
+    hasSpecial,
+    ok: lengthOK && hasUpper && hasNumber && hasSpecial,
+  };
 }
 
 const isValidEmail = (em) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em);
@@ -349,7 +358,7 @@ async function routeAfterSignIn(
       buildUserDoc({
         email: fbUser.email || "",
         full_name: fbUser.displayName || "",
-        userType: createRole,
+        role: createRole,
         signupEntryRole: createRole,
         collaboratorRef,
         referredByCollaboratorUid,
@@ -395,7 +404,7 @@ async function routeAfterSignIn(
   const profile = snap.data();
 
   const mergePayload = {
-    updated_at: serverTimestamp(),
+    updatedAt: serverTimestamp(),
   };
 
   if (collaboratorRef && !profile?.referred_by_collaborator_code) {
@@ -449,7 +458,12 @@ async function routeAfterSignIn(
   if (!profile?.onboarding_completed) {
     const roleToUse = isCollaboratorInvite
       ? "collaborator"
-      : normalizeRole(profile?.user_type || roleHint || DEFAULT_ROLE);
+      : normalizeRole(
+          profile?.role ||
+            profile?.user_type ||
+            roleHint ||
+            DEFAULT_ROLE
+        );
 
     return navigate(
       buildOnboardingUrl({
@@ -485,7 +499,10 @@ export default function Welcome() {
     localStorage.setItem("gp_lang", nextLang);
 
     const collaboratorRef = (params.get("ref") || "").trim();
-    const rawRole = (params.get("role") || params.get("userType") || "").toString().trim().toLowerCase();
+    const rawRole = (params.get("role") || params.get("userType") || "")
+      .toString()
+      .trim()
+      .toLowerCase();
     const agentRef = (params.get("agent_ref") || "").trim();
     const tutorRef = (params.get("tutor_ref") || "").trim();
     const studentRef = (params.get("student_ref") || "").trim();
@@ -508,7 +525,10 @@ export default function Welcome() {
   }, [params, i18n]);
 
   const collaboratorInviteFlow = useMemo(() => {
-    const rawRole = (params.get("role") || params.get("userType") || "").toString().trim().toLowerCase();
+    const rawRole = (params.get("role") || params.get("userType") || "")
+      .toString()
+      .trim()
+      .toLowerCase();
     const refCode = (params.get("ref") || "").toString().trim();
     return rawRole === "collaborator" && !!refCode;
   }, [params]);
@@ -590,7 +610,12 @@ export default function Welcome() {
   const [checking, setChecking] = useState(true);
 
   const [dialog, setDialog] = useState({ open: false, title: "", message: "" });
-  const [emailCheck, setEmailCheck] = useState({ checking: false, available: null, methods: [], error: "" });
+  const [emailCheck, setEmailCheck] = useState({
+    checking: false,
+    available: null,
+    methods: [],
+    error: "",
+  });
   const [emailCheckVersion, setEmailCheckVersion] = useState(0);
   const emailCheckVersionRef = useRef(0);
 
@@ -695,7 +720,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.google_failed_title", "Google sign-in failed"),
-          message: err?.code ? `Firebase: ${err.code}` : err?.message || tr("auth.google_failed_message", "Google sign-in failed"),
+          message:
+            err?.code
+              ? `Firebase: ${err.code}`
+              : err?.message || tr("auth.google_failed_message", "Google sign-in failed"),
         });
       }
     } finally {
@@ -721,7 +749,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.apple_unavailable_title", "Apple sign-in unavailable"),
-          message: tr("auth.apple_unavailable_message", "Apple sign-in is not enabled for this project/environment."),
+          message: tr(
+            "auth.apple_unavailable_message",
+            "Apple sign-in is not enabled for this project/environment."
+          ),
         });
       } else if (err?.code === "auth/account-exists-with-different-credential") {
         setDialog({
@@ -736,7 +767,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.apple_failed_title", "Apple sign-in failed"),
-          message: err?.code ? `Firebase: ${err.code}` : err?.message || tr("auth.apple_failed_message", "Apple sign-in failed"),
+          message:
+            err?.code
+              ? `Firebase: ${err.code}`
+              : err?.message || tr("auth.apple_failed_message", "Apple sign-in failed"),
         });
       }
     } finally {
@@ -781,20 +815,29 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.incorrect_password_title", "Incorrect password"),
-          message: tr("auth.incorrect_password_message", "The password you entered is incorrect. Please try again."),
+          message: tr(
+            "auth.incorrect_password_message",
+            "The password you entered is incorrect. Please try again."
+          ),
         });
       } else if (err?.code === "auth/user-not-found") {
         setMode("signup");
         setDialog({
           open: true,
           title: tr("auth.no_account_title", "No account found"),
-          message: tr("auth.no_account_message", "We couldn’t find an account for that email. Please create one."),
+          message: tr(
+            "auth.no_account_message",
+            "We couldn’t find an account for that email. Please create one."
+          ),
         });
       } else {
         setDialog({
           open: true,
           title: tr("auth.signin_failed_title", "Sign-in failed"),
-          message: err?.code ? `Firebase: ${err.code}` : err?.message || tr("auth.email_signin_failed", "Email sign-in failed."),
+          message:
+            err?.code
+              ? `Firebase: ${err.code}`
+              : err?.message || tr("auth.email_signin_failed", "Email sign-in failed."),
         });
       }
     } finally {
@@ -830,7 +873,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.password_requirements_title", "Password requirements"),
-          message: `${tr("auth.password_requirements_message", "Password does not meet requirements:")}\n${issues}`,
+          message: `${tr(
+            "auth.password_requirements_message",
+            "Password does not meet requirements:"
+          )}\n${issues}`,
         });
         return;
       }
@@ -839,7 +885,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.passwords_no_match_title", "Passwords do not match"),
-          message: tr("auth.passwords_no_match_message", "Please make sure the passwords are identical."),
+          message: tr(
+            "auth.passwords_no_match_message",
+            "Please make sure the passwords are identical."
+          ),
         });
         return;
       }
@@ -849,7 +898,10 @@ export default function Welcome() {
         setDialog({
           open: true,
           title: tr("auth.email_already_registered_title", "Email already registered"),
-          message: tr("auth.email_already_registered_simple", "This email is already registered. Try signing in."),
+          message: tr(
+            "auth.email_already_registered_simple",
+            "This email is already registered. Try signing in."
+          ),
         });
         setMode("signin");
         return;
@@ -870,10 +922,21 @@ export default function Welcome() {
       );
     } catch (err) {
       let message = err?.message || tr("auth.signup_failed_message", "Sign-up failed.");
-      if (err?.code === "auth/invalid-email") message = tr("auth.invalid_email_message", "Please enter a valid email address.");
-      else if (err?.code === "auth/weak-password") message = tr("auth.weak_password_message", "Password should meet the requirements listed.");
-      else if (err?.code === "auth/email-already-in-use") message = tr("auth.email_in_use_message", "Email already in use.");
-      setDialog({ open: true, title: tr("auth.signup_failed_title", "Sign-up failed"), message });
+      if (err?.code === "auth/invalid-email") {
+        message = tr("auth.invalid_email_message", "Please enter a valid email address.");
+      } else if (err?.code === "auth/weak-password") {
+        message = tr(
+          "auth.weak_password_message",
+          "Password should meet the requirements listed."
+        );
+      } else if (err?.code === "auth/email-already-in-use") {
+        message = tr("auth.email_in_use_message", "Email already in use.");
+      }
+      setDialog({
+        open: true,
+        title: tr("auth.signup_failed_title", "Sign-up failed"),
+        message,
+      });
     } finally {
       setBusy(false);
     }
@@ -904,7 +967,11 @@ export default function Welcome() {
 
   const canSubmitSignup =
     mode !== "signup" ||
-    (!emailCheck.checking && emailCheck.available === true && pwStatus.ok && confirm === password && !!signupRole);
+    (!emailCheck.checking &&
+      emailCheck.available === true &&
+      pwStatus.ok &&
+      confirm === password &&
+      !!signupRole);
 
   return (
     <div className="min-h-screen overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-800 text-gray-900">
@@ -952,27 +1019,105 @@ export default function Welcome() {
                             <stop stopColor="rgba(251,191,36,0.95)" />
                             <stop offset="1" stopColor="rgba(245,158,11,0.25)" />
                           </linearGradient>
-                          <marker id="arrowGreen" viewBox="0 0 12 12" markerWidth="10" markerHeight="10" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                          <marker
+                            id="arrowGreen"
+                            viewBox="0 0 12 12"
+                            markerWidth="10"
+                            markerHeight="10"
+                            refX="10"
+                            refY="6"
+                            orient="auto"
+                            markerUnits="userSpaceOnUse"
+                          >
                             <path d="M0 0 L12 6 L0 12 Z" fill="rgba(16,185,129,0.95)" />
                           </marker>
-                          <marker id="arrowBlue" viewBox="0 0 12 12" markerWidth="10" markerHeight="10" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                          <marker
+                            id="arrowBlue"
+                            viewBox="0 0 12 12"
+                            markerWidth="10"
+                            markerHeight="10"
+                            refX="10"
+                            refY="6"
+                            orient="auto"
+                            markerUnits="userSpaceOnUse"
+                          >
                             <path d="M0 0 L12 6 L0 12 Z" fill="rgba(59,130,246,0.95)" />
                           </marker>
-                          <marker id="arrowPurple" viewBox="0 0 12 12" markerWidth="10" markerHeight="10" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                          <marker
+                            id="arrowPurple"
+                            viewBox="0 0 12 12"
+                            markerWidth="10"
+                            markerHeight="10"
+                            refX="10"
+                            refY="6"
+                            orient="auto"
+                            markerUnits="userSpaceOnUse"
+                          >
                             <path d="M0 0 L12 6 L0 12 Z" fill="rgba(124,58,237,0.95)" />
                           </marker>
-                          <marker id="arrowAmber" viewBox="0 0 12 12" markerWidth="10" markerHeight="10" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+                          <marker
+                            id="arrowAmber"
+                            viewBox="0 0 12 12"
+                            markerWidth="10"
+                            markerHeight="10"
+                            refX="10"
+                            refY="6"
+                            orient="auto"
+                            markerUnits="userSpaceOnUse"
+                          >
                             <path d="M0 0 L12 6 L0 12 Z" fill="rgba(245,158,11,0.95)" />
                           </marker>
                         </defs>
 
-                        <circle cx="500" cy="320" r="120" stroke="rgba(255,255,255,0.28)" strokeWidth="3" strokeDasharray="2 10" />
-                        <circle cx="500" cy="320" r="170" stroke="rgba(255,255,255,0.16)" strokeWidth="2" strokeDasharray="3 14" />
+                        <circle
+                          cx="500"
+                          cy="320"
+                          r="120"
+                          stroke="rgba(255,255,255,0.28)"
+                          strokeWidth="3"
+                          strokeDasharray="2 10"
+                        />
+                        <circle
+                          cx="500"
+                          cy="320"
+                          r="170"
+                          stroke="rgba(255,255,255,0.16)"
+                          strokeWidth="2"
+                          strokeDasharray="3 14"
+                        />
 
-                        <path d="M372.7 192.7 A180 180 0 0 1 627.3 192.7" stroke="url(#gpAmber)" strokeWidth="12" strokeLinecap="round" opacity="0.9" markerEnd="url(#arrowAmber)" />
-                        <path d="M627.3 192.7 A180 180 0 0 1 627.3 447.3" stroke="url(#gpBlue)" strokeWidth="12" strokeLinecap="round" opacity="0.9" markerEnd="url(#arrowBlue)" />
-                        <path d="M627.3 447.3 A180 180 0 0 1 372.7 447.3" stroke="url(#gpPurple)" strokeWidth="12" strokeLinecap="round" opacity="0.9" markerEnd="url(#arrowPurple)" />
-                        <path d="M372.7 447.3 A180 180 0 0 1 372.7 192.7" stroke="url(#gpGreen)" strokeWidth="12" strokeLinecap="round" opacity="0.9" markerEnd="url(#arrowGreen)" />
+                        <path
+                          d="M372.7 192.7 A180 180 0 0 1 627.3 192.7"
+                          stroke="url(#gpAmber)"
+                          strokeWidth="12"
+                          strokeLinecap="round"
+                          opacity="0.9"
+                          markerEnd="url(#arrowAmber)"
+                        />
+                        <path
+                          d="M627.3 192.7 A180 180 0 0 1 627.3 447.3"
+                          stroke="url(#gpBlue)"
+                          strokeWidth="12"
+                          strokeLinecap="round"
+                          opacity="0.9"
+                          markerEnd="url(#arrowBlue)"
+                        />
+                        <path
+                          d="M627.3 447.3 A180 180 0 0 1 372.7 447.3"
+                          stroke="url(#gpPurple)"
+                          strokeWidth="12"
+                          strokeLinecap="round"
+                          opacity="0.9"
+                          markerEnd="url(#arrowPurple)"
+                        />
+                        <path
+                          d="M372.7 447.3 A180 180 0 0 1 372.7 192.7"
+                          stroke="url(#gpGreen)"
+                          strokeWidth="12"
+                          strokeLinecap="round"
+                          opacity="0.9"
+                          markerEnd="url(#arrowGreen)"
+                        />
                       </svg>
 
                       <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2">
@@ -1045,20 +1190,33 @@ export default function Welcome() {
                               setSignupRole(item.key);
                             }}
                             className={`w-full rounded-3xl border border-white/15 bg-white/10 p-4 text-left shadow-[0_18px_50px_rgba(0,0,0,0.20)] backdrop-blur transition ${
-                              isRoleLocked ? "cursor-not-allowed opacity-50" : "hover:-translate-y-1 hover:bg-white/15"
+                              isRoleLocked
+                                ? "cursor-not-allowed opacity-50"
+                                : "hover:-translate-y-1 hover:bg-white/15"
                             } ${
-                              mode === "signup" && signupRole === item.key ? "ring-2 ring-emerald-400" : ""
+                              mode === "signup" && signupRole === item.key
+                                ? "ring-2 ring-emerald-400"
+                                : ""
                             }`}
                           >
                             <div className="mb-3 flex items-center justify-center">
-                              <img src={item.img} alt={item.title} className="h-20 w-full max-w-[92%] object-contain" loading="lazy" />
+                              <img
+                                src={item.img}
+                                alt={item.title}
+                                className="h-20 w-full max-w-[92%] object-contain"
+                                loading="lazy"
+                              />
                             </div>
                             <div className="text-lg font-extrabold text-white">{item.title}</div>
                             <div className="mt-1 text-xs text-white/85">{item.desc}</div>
                             <ul className="mt-2 space-y-1 text-xs text-white/90">
                               {item.bullets.map((bullet) => (
                                 <li key={bullet} className="flex items-start gap-2">
-                                  <span className={`mt-1 inline-flex h-4 w-4 items-center justify-center rounded-full ${item.badge}`}>✓</span>
+                                  <span
+                                    className={`mt-1 inline-flex h-4 w-4 items-center justify-center rounded-full ${item.badge}`}
+                                  >
+                                    ✓
+                                  </span>
                                   {bullet}
                                 </li>
                               ))}
@@ -1074,35 +1232,65 @@ export default function Welcome() {
                   <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-center gap-x-3 gap-y-4">
                     <div className="flex items-center gap-2">
                       <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/25">
-                        <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <svg
+                          viewBox="0 0 24 24"
+                          className="h-5 w-5"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
                           <path d="M12 2l7 4v6c0 5-3 9-7 10-4-1-7-5-7-10V6l7-4z" />
                           <path d="M9 12l2 2 4-4" />
                         </svg>
                       </span>
-                      <span className="text-lg font-semibold leading-tight">{tr("trust_verified", "Verified profiles").replace("✔", "").trim()}</span>
+                      <span className="text-lg font-semibold leading-tight">
+                        {tr("trust_verified", "Verified profiles").replace("✔", "").trim()}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2">
                       <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/25">
-                        <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <svg
+                          viewBox="0 0 24 24"
+                          className="h-5 w-5"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
                           <path d="M12 6a3 3 0 103 3" />
                           <path d="M12 21a9 9 0 110-18 9 9 0 010 18z" />
                           <path d="M7.5 12h9" />
                           <path d="M12 7.5v9" />
                         </svg>
                       </span>
-                      <span className="text-lg font-semibold leading-tight">{tr("trust_transparent", "Transparent partnerships").replace("✔", "").trim()}</span>
+                      <span className="text-lg font-semibold leading-tight">
+                        {tr("trust_transparent", "Transparent partnerships").replace("✔", "").trim()}
+                      </span>
                     </div>
 
                     <div className="flex items-center gap-2">
                       <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/15 ring-1 ring-white/25">
-                        <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <svg
+                          viewBox="0 0 24 24"
+                          className="h-5 w-5"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
                           <path d="M12 3v18" />
                           <path d="M7 8l5-5 5 5" />
                           <path d="M7 16l5 5 5-5" />
                         </svg>
                       </span>
-                      <span className="text-lg font-semibold leading-tight">{tr("trust_no_hidden", "No hidden agendas").replace("✔", "").trim()}</span>
+                      <span className="text-lg font-semibold leading-tight">
+                        {tr("trust_no_hidden", "No hidden agendas").replace("✔", "").trim()}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1129,7 +1317,9 @@ export default function Welcome() {
                 <div className="mb-5 flex items-start justify-between gap-4">
                   <div>
                     <h2 className="text-[1.7rem] font-bold tracking-tight text-gray-900">
-                      {mode === "signin" ? tr("auth.log_in_title", "Log in") : tr("auth.create_account", "Create account")}
+                      {mode === "signin"
+                        ? tr("auth.log_in_title", "Log in")
+                        : tr("auth.create_account", "Create account")}
                     </h2>
                     <p className="mt-1 text-sm text-gray-500">
                       {mode === "signin"
@@ -1189,8 +1379,14 @@ export default function Welcome() {
                           </div>
                           <div className="text-xs text-emerald-700">
                             {collaboratorInviteFlow
-                              ? tr("auth.role_locked_invite", "This role was assigned through your invitation link.")
-                              : tr("auth.role_locked_student_referral", "This signup came from an agent or tutor referral, so the role is locked to Student.")}
+                              ? tr(
+                                  "auth.role_locked_invite",
+                                  "This role was assigned through your invitation link."
+                                )
+                              : tr(
+                                  "auth.role_locked_student_referral",
+                                  "This signup came from an agent or tutor referral, so the role is locked to Student."
+                                )}
                           </div>
                         </div>
                         <div className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white">
@@ -1203,7 +1399,9 @@ export default function Welcome() {
                         onChange={(e) => setSignupRole(e.target.value)}
                         className="h-12 w-full rounded-2xl border border-gray-200 bg-white px-4 text-sm text-gray-800 outline-none transition focus:border-blue-400"
                       >
-                        <option value="">{tr("auth.select_role_placeholder", "Select a role...")}</option>
+                        <option value="">
+                          {tr("auth.select_role_placeholder", "Select a role...")}
+                        </option>
                         {SIGNUP_ROLE_OPTIONS.map((opt) => (
                           <option key={opt.value} value={opt.value}>
                             {tr(opt.labelKey, opt.labelFallback)}
@@ -1215,7 +1413,13 @@ export default function Welcome() {
                 )}
 
                 <div className="mt-4 space-y-3">
-                  <Button size="lg" variant="outline" className="h-12 w-full rounded-2xl text-base font-semibold" onClick={handleLoginGoogle} disabled={busy}>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    className="h-12 w-full rounded-2xl text-base font-semibold"
+                    onClick={handleLoginGoogle}
+                    disabled={busy}
+                  >
                     <GoogleIcon />
                     {tr("auth.continue_google", "Continue with Google")}
                   </Button>
@@ -1252,35 +1456,51 @@ export default function Welcome() {
                       <Input
                         type="email"
                         placeholder={tr("auth.email_placeholder", "Email address")}
-                        className={`h-12 rounded-2xl pl-10 pr-10 ${isValidEmail(email) && emailTaken ? "border-red-300" : ""}`}
+                        className={`h-12 rounded-2xl pl-10 pr-10 ${
+                          isValidEmail(email) && emailTaken ? "border-red-300" : ""
+                        }`}
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                       />
                       <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                        {isValidEmail(email) && emailCheck.checking && <Loader2 className="h-5 w-5 animate-spin text-gray-400" />}
-                        {isValidEmail(email) && emailCheck.available === true && <Check className="h-5 w-5 text-green-600" />}
-                        {isValidEmail(email) && emailTaken && <X className="h-5 w-5 text-red-500" />}
+                        {isValidEmail(email) && emailCheck.checking && (
+                          <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                        )}
+                        {isValidEmail(email) && emailCheck.available === true && (
+                          <Check className="h-5 w-5 text-green-600" />
+                        )}
+                        {isValidEmail(email) && emailTaken && (
+                          <X className="h-5 w-5 text-red-500" />
+                        )}
                       </div>
                     </div>
                   </div>
 
-                  {isValidEmail(email) && emailTaken && (
-                    emailIsGoogleOnly ? (
+                  {isValidEmail(email) && emailTaken &&
+                    (emailIsGoogleOnly ? (
                       <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
                         <GoogleIcon className="mr-0 h-4 w-4" />
-                        {tr("auth.email_google_only", "This email is already registered with Google. Please use Continue with Google.")}
+                        {tr(
+                          "auth.email_google_only",
+                          "This email is already registered with Google. Please use Continue with Google."
+                        )}
                       </div>
                     ) : emailIsAppleOnly ? (
                       <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
                         <span className="inline-block text-base leading-none"></span>
-                        {tr("auth.email_apple_only", "This email is already registered with Apple. Please use Continue with Apple.")}
+                        {tr(
+                          "auth.email_apple_only",
+                          "This email is already registered with Apple. Please use Continue with Apple."
+                        )}
                       </div>
                     ) : (
                       <p className="text-xs text-red-600">
-                        {tr("auth.email_already_registered_simple", "This email is already registered. Try signing in with your existing method.")}
+                        {tr(
+                          "auth.email_already_registered_simple",
+                          "This email is already registered. Try signing in with your existing method."
+                        )}
                       </p>
-                    )
-                  )}
+                    ))}
 
                   {emailCheck.error && <p className="text-xs text-amber-600">{emailCheck.error}</p>}
 
@@ -1291,20 +1511,42 @@ export default function Welcome() {
                     <div className="relative">
                       <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
                       <Input
-                        type={mode === "signin" ? (showSigninPw ? "text" : "password") : (showPw ? "text" : "password")}
+                        type={
+                          mode === "signin"
+                            ? showSigninPw
+                              ? "text"
+                              : "password"
+                            : showPw
+                            ? "text"
+                            : "password"
+                        }
                         placeholder={tr("auth.password_placeholder", "Password")}
-                        className={`h-12 rounded-2xl pl-10 pr-10 ${mode === "signup" && password && !pwStatus.ok ? "border-red-300" : ""}`}
+                        className={`h-12 rounded-2xl pl-10 pr-10 ${
+                          mode === "signup" && password && !pwStatus.ok ? "border-red-300" : ""
+                        }`}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                       />
                       <button
                         type="button"
-                        onClick={() => (mode === "signin" ? setShowSigninPw((v) => !v) : setShowPw((v) => !v))}
+                        onClick={() =>
+                          mode === "signin"
+                            ? setShowSigninPw((v) => !v)
+                            : setShowPw((v) => !v)
+                        }
                         className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
                       >
-                        {mode === "signin"
-                          ? (showSigninPw ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />)
-                          : (showPw ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />)}
+                        {mode === "signin" ? (
+                          showSigninPw ? (
+                            <EyeOff className="h-5 w-5" />
+                          ) : (
+                            <Eye className="h-5 w-5" />
+                          )
+                        ) : showPw ? (
+                          <EyeOff className="h-5 w-5" />
+                        ) : (
+                          <Eye className="h-5 w-5" />
+                        )}
                       </button>
                     </div>
                   </div>
@@ -1316,10 +1558,22 @@ export default function Welcome() {
                           {tr("auth.password_requirements_label", "Password requirements:")}
                         </div>
                         <ul className="ml-1 space-y-1">
-                          <RuleRow ok={pwStatus.lengthOK} label={tr("auth.pw_rule_len", "Minimum length: 8 characters")} />
-                          <RuleRow ok={pwStatus.hasUpper} label={tr("auth.pw_rule_upper", "At least 1 capital letter")} />
-                          <RuleRow ok={pwStatus.hasNumber} label={tr("auth.pw_rule_number", "At least 1 number")} />
-                          <RuleRow ok={pwStatus.hasSpecial} label={tr("auth.pw_rule_special", "At least 1 special character")} />
+                          <RuleRow
+                            ok={pwStatus.lengthOK}
+                            label={tr("auth.pw_rule_len", "Minimum length: 8 characters")}
+                          />
+                          <RuleRow
+                            ok={pwStatus.hasUpper}
+                            label={tr("auth.pw_rule_upper", "At least 1 capital letter")}
+                          />
+                          <RuleRow
+                            ok={pwStatus.hasNumber}
+                            label={tr("auth.pw_rule_number", "At least 1 number")}
+                          />
+                          <RuleRow
+                            ok={pwStatus.hasSpecial}
+                            label={tr("auth.pw_rule_special", "At least 1 special character")}
+                          />
                         </ul>
                       </div>
 
@@ -1341,7 +1595,11 @@ export default function Welcome() {
                             onClick={() => setShowConfirm((v) => !v)}
                             className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
                           >
-                            {showConfirm ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                            {showConfirm ? (
+                              <EyeOff className="h-5 w-5" />
+                            ) : (
+                              <Eye className="h-5 w-5" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -1367,19 +1625,29 @@ export default function Welcome() {
                     onClick={mode === "signin" ? handleSignInEmail : handleSignUpEmail}
                     disabled={busy || (mode === "signup" ? !canSubmitSignup : false)}
                   >
-                    {mode === "signin" ? tr("auth.log_in_title", "Log in") : tr("auth.create_account", "Create account")}
+                    {mode === "signin"
+                      ? tr("auth.log_in_title", "Log in")
+                      : tr("auth.create_account", "Create account")}
                   </Button>
 
                   <p className="text-center text-sm text-gray-500">
                     {studentScanFlow
-                      ? tr("auth.after_login_student_scan_note", "After login, we’ll continue the scanned student connection automatically.")
-                      : tr("auth.after_login_note", "After login, you will continue inside the GreenPass app.")}
+                      ? tr(
+                          "auth.after_login_student_scan_note",
+                          "After login, we’ll continue the scanned student connection automatically."
+                        )
+                      : tr(
+                          "auth.after_login_note",
+                          "After login, you will continue inside the GreenPass app."
+                        )}
                   </p>
                 </div>
               </div>
 
               <div className="mt-4 rounded-[22px] border border-white/45 bg-white/95 px-5 py-4 text-center text-sm text-gray-700 shadow-[0_10px_30px_rgba(0,0,0,0.15)]">
-                {mode === "signin" ? tr("auth.no_account", "Don’t have an account?") : tr("auth.have_account", "Have an account?")}{" "}
+                {mode === "signin"
+                  ? tr("auth.no_account", "Don’t have an account?")
+                  : tr("auth.have_account", "Have an account?")}{" "}
                 <button
                   type="button"
                   onClick={() => {
