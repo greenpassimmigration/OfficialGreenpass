@@ -30,6 +30,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   MoreHorizontal,
   User as UserIcon,
   Shield,
@@ -39,6 +47,8 @@ import {
   BookOpen,
   Search,
   Loader2,
+  Link2,
+  XCircle,
 } from "lucide-react";
 import { format } from "date-fns";
 import InviteUsersDialog from "@/components/invites/InviteUserDialog";
@@ -50,6 +60,7 @@ const roleIcons = {
   tutor: <BookOpen className="w-4 h-4 text-green-500" />,
   vendor: <Store className="w-4 h-4 text-orange-500" />,
   user: <UserIcon className="w-4 h-4 text-gray-500" />,
+  student: <UserIcon className="w-4 h-4 text-gray-500" />,
 };
 
 const roleLabels = {
@@ -59,6 +70,7 @@ const roleLabels = {
   tutor: "Tutor",
   vendor: "Vendor",
   user: "User",
+  student: "Student",
 };
 
 function flagUrlFromCode(code) {
@@ -139,6 +151,22 @@ function getStatusClasses(status) {
   }
 }
 
+function getAssignedAgentId(user) {
+  return (
+    user?.assigned_agent_id ||
+    user?.assignedAgentId ||
+    user?.referred_by_agent_id ||
+    user?.linked_agent_id ||
+    user?.agent_id ||
+    ""
+  );
+}
+
+function canAssignAgent(user) {
+  const role = getUserRole(user);
+  return role === "user" || role === "student";
+}
+
 function CountryDisplay({ country, countryCode }) {
   const flagUrl = flagUrlFromCode(countryCode);
 
@@ -168,13 +196,35 @@ function CountryDisplay({ country, countryCode }) {
   );
 }
 
+function AssignedAgentDisplay({ agent }) {
+  if (!agent) {
+    return <span className="text-muted-foreground">Unassigned</span>;
+  }
+
+  return (
+    <div className="min-w-0">
+      <div className="font-medium truncate">{agent.full_name || "Unnamed Agent"}</div>
+      <div className="text-xs text-muted-foreground truncate">
+        {agent.email || agent.uid || "—"}
+      </div>
+    </div>
+  );
+}
+
 export default function UserManagement() {
   const [users, setUsers] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [assigning, setAssigning] = useState(false);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [verificationFilter, setVerificationFilter] = useState("all");
   const [inviteOpen, setInviteOpen] = useState(false);
+
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedAgentId, setSelectedAgentId] = useState("");
 
   useEffect(() => {
     const loadUsers = async () => {
@@ -188,6 +238,7 @@ export default function UserManagement() {
               _resolvedRole: getUserRole(user),
               _verificationStatus: getVerificationStatus(user),
               _createdAt: toDate(user?.created_at),
+              _assignedAgentId: getAssignedAgentId(user),
             }))
           : [];
 
@@ -198,9 +249,13 @@ export default function UserManagement() {
         );
 
         setUsers(sorted);
+        setAgents(
+          sorted.filter((user) => getUserRole(user) === "agent")
+        );
       } catch (error) {
         console.error("Error loading users:", error);
         setUsers([]);
+        setAgents([]);
       } finally {
         setLoading(false);
       }
@@ -209,6 +264,24 @@ export default function UserManagement() {
     loadUsers();
   }, []);
 
+  const agentMap = useMemo(() => {
+    const map = new Map();
+
+    agents.forEach((agent) => {
+      const possibleKeys = [
+        agent?.id,
+        agent?.uid,
+        agent?.user_id,
+      ].filter(Boolean);
+
+      possibleKeys.forEach((key) => {
+        map.set(String(key), agent);
+      });
+    });
+
+    return map;
+  }, [agents]);
+
   const filteredUsers = useMemo(() => {
     let filtered = [...users];
 
@@ -216,6 +289,8 @@ export default function UserManagement() {
       const q = searchTerm.toLowerCase().trim();
 
       filtered = filtered.filter((user) => {
+        const assignedAgent = agentMap.get(String(user._assignedAgentId || ""));
+
         const values = [
           user.full_name,
           user.email,
@@ -225,6 +300,8 @@ export default function UserManagement() {
           user.uid,
           user._resolvedRole,
           user._verificationStatus,
+          assignedAgent?.full_name,
+          assignedAgent?.email,
         ];
 
         return values.some((value) =>
@@ -244,7 +321,87 @@ export default function UserManagement() {
     }
 
     return filtered;
-  }, [users, searchTerm, roleFilter, verificationFilter]);
+  }, [users, searchTerm, roleFilter, verificationFilter, agentMap]);
+
+  const openAssignDialog = (user) => {
+    if (!canAssignAgent(user)) return;
+    setSelectedUser(user);
+    setSelectedAgentId(user?._assignedAgentId || "");
+    setAssignDialogOpen(true);
+  };
+
+  const handleAssignAgent = async () => {
+    if (!selectedUser) return;
+
+    setAssigning(true);
+    try {
+      const payload = {
+        assigned_agent_id: selectedAgentId || null,
+        assignedAgentId: selectedAgentId || null,
+      };
+
+      await User.update(selectedUser.id || selectedUser.uid, payload);
+
+      const updatedUsers = users.map((user) => {
+        const matches =
+          (user.id && selectedUser.id && user.id === selectedUser.id) ||
+          (user.uid && selectedUser.uid && user.uid === selectedUser.uid);
+
+        if (!matches) return user;
+
+        return {
+          ...user,
+          ...payload,
+          _assignedAgentId: selectedAgentId || "",
+        };
+      });
+
+      setUsers(updatedUsers);
+      setSelectedUser(null);
+      setSelectedAgentId("");
+      setAssignDialogOpen(false);
+    } catch (error) {
+      console.error("Error assigning agent:", error);
+      alert("Failed to assign agent. Please check permissions and try again.");
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  const handleClearAgent = async (user) => {
+    if (!user) return;
+
+    setAssigning(true);
+    try {
+      const payload = {
+        assigned_agent_id: null,
+        assignedAgentId: null,
+      };
+
+      await User.update(user.id || user.uid, payload);
+
+      const updatedUsers = users.map((item) => {
+        const matches =
+          (item.id && user.id && item.id === user.id) ||
+          (item.uid && user.uid && item.uid === user.uid);
+
+        if (!matches) return item;
+
+        return {
+          ...item,
+          ...payload,
+          _assignedAgentId: "",
+        };
+      });
+
+      setUsers(updatedUsers);
+    } catch (error) {
+      console.error("Error clearing agent:", error);
+      alert("Failed to clear agent. Please check permissions and try again.");
+    } finally {
+      setAssigning(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -281,6 +438,90 @@ export default function UserManagement() {
         title="Invite User"
       />
 
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign Agent</DialogTitle>
+            <DialogDescription>
+              Assign an agent to this user/student account.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="text-sm font-medium">
+                {selectedUser?.full_name || "N/A"}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {selectedUser?.email || "—"}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium mb-2 block">Select Agent</label>
+              <Select value={selectedAgentId || ""} onValueChange={setSelectedAgentId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose an agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  {agents.length === 0 ? (
+                    <SelectItem value="no-agents" disabled>
+                      No agents available
+                    </SelectItem>
+                  ) : (
+                    agents.map((agent) => (
+                      <SelectItem
+                        key={agent.id || agent.uid}
+                        value={String(agent.id || agent.uid)}
+                      >
+                        {agent.full_name || "Unnamed Agent"}
+                        {agent.email ? ` — ${agent.email}` : ""}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAssignDialogOpen(false);
+                setSelectedUser(null);
+                setSelectedAgentId("");
+              }}
+              disabled={assigning}
+            >
+              Cancel
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={() => setSelectedAgentId("")}
+              disabled={assigning}
+            >
+              Clear Selection
+            </Button>
+
+            <Button
+              onClick={handleAssignAgent}
+              disabled={assigning || !selectedAgentId}
+            >
+              {assigning ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save Agent"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader>
           <CardTitle>All Users</CardTitle>
@@ -289,7 +530,7 @@ export default function UserManagement() {
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
               <Input
-                placeholder="Search by name, email, phone, country, UID..."
+                placeholder="Search by name, email, phone, country, UID, or assigned agent..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
@@ -343,6 +584,7 @@ export default function UserManagement() {
                 <TableRow>
                   <TableHead>User</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Assigned Agent</TableHead>
                   <TableHead>Country</TableHead>
                   <TableHead>Joined</TableHead>
                   <TableHead>Verification</TableHead>
@@ -357,7 +599,7 @@ export default function UserManagement() {
                 {filteredUsers.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={8}
                       className="text-center py-10 text-muted-foreground"
                     >
                       No users found.
@@ -369,6 +611,9 @@ export default function UserManagement() {
                     const verificationStatus = user._verificationStatus;
                     const verificationLabel =
                       getVerificationLabel(verificationStatus);
+                    const assignedAgent = agentMap.get(
+                      String(user._assignedAgentId || "")
+                    );
 
                     return (
                       <TableRow key={user.id || user.uid}>
@@ -391,6 +636,14 @@ export default function UserManagement() {
                             {roleIcons[role] || <UserIcon className="w-4 h-4" />}
                             {roleLabels[role] || role}
                           </div>
+                        </TableCell>
+
+                        <TableCell>
+                          {canAssignAgent(user) ? (
+                            <AssignedAgentDisplay agent={assignedAgent} />
+                          ) : (
+                            <span className="text-muted-foreground">N/A</span>
+                          )}
                         </TableCell>
 
                         <TableCell>
@@ -432,6 +685,20 @@ export default function UserManagement() {
                             <DropdownMenuContent align="end">
                               <DropdownMenuItem>View details</DropdownMenuItem>
                               <DropdownMenuItem>Edit user</DropdownMenuItem>
+
+                              {canAssignAgent(user) ? (
+                                <DropdownMenuItem onClick={() => openAssignDialog(user)}>
+                                  <Link2 className="w-4 h-4 mr-2" />
+                                  {user._assignedAgentId ? "Change Agent" : "Assign Agent"}
+                                </DropdownMenuItem>
+                              ) : null}
+
+                              {canAssignAgent(user) && user._assignedAgentId ? (
+                                <DropdownMenuItem onClick={() => handleClearAgent(user)}>
+                                  <XCircle className="w-4 h-4 mr-2" />
+                                  Clear Agent
+                                </DropdownMenuItem>
+                              ) : null}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
@@ -454,6 +721,9 @@ export default function UserManagement() {
                 const verificationStatus = user._verificationStatus;
                 const verificationLabel =
                   getVerificationLabel(verificationStatus);
+                const assignedAgent = agentMap.get(
+                  String(user._assignedAgentId || "")
+                );
 
                 return (
                   <Card key={user.id || user.uid} className="p-4">
@@ -485,6 +755,20 @@ export default function UserManagement() {
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem>View details</DropdownMenuItem>
                           <DropdownMenuItem>Edit user</DropdownMenuItem>
+
+                          {canAssignAgent(user) ? (
+                            <DropdownMenuItem onClick={() => openAssignDialog(user)}>
+                              <Link2 className="w-4 h-4 mr-2" />
+                              {user._assignedAgentId ? "Change Agent" : "Assign Agent"}
+                            </DropdownMenuItem>
+                          ) : null}
+
+                          {canAssignAgent(user) && user._assignedAgentId ? (
+                            <DropdownMenuItem onClick={() => handleClearAgent(user)}>
+                              <XCircle className="w-4 h-4 mr-2" />
+                              Clear Agent
+                            </DropdownMenuItem>
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
@@ -495,6 +779,28 @@ export default function UserManagement() {
                         <div className="flex items-center gap-2">
                           {roleIcons[role] || <UserIcon className="w-4 h-4" />}
                           {roleLabels[role] || role}
+                        </div>
+                      </div>
+
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-gray-500">Assigned Agent</span>
+                        <div className="max-w-[65%] text-right">
+                          {canAssignAgent(user) ? (
+                            assignedAgent ? (
+                              <div>
+                                <div className="font-medium truncate">
+                                  {assignedAgent.full_name || "Unnamed Agent"}
+                                </div>
+                                <div className="text-xs text-muted-foreground truncate">
+                                  {assignedAgent.email || assignedAgent.uid || "—"}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">Unassigned</span>
+                            )
+                          ) : (
+                            <span className="text-muted-foreground">N/A</span>
+                          )}
                         </div>
                       </div>
 
@@ -530,6 +836,19 @@ export default function UserManagement() {
                           {user.subscription_status || "—"}
                         </span>
                       </div>
+
+                      {canAssignAgent(user) ? (
+                        <div className="pt-2">
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => openAssignDialog(user)}
+                          >
+                            <Link2 className="w-4 h-4 mr-2" />
+                            {user._assignedAgentId ? "Change Agent" : "Assign Agent"}
+                          </Button>
+                        </div>
+                      ) : null}
                     </div>
                   </Card>
                 );
