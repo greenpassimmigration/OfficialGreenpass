@@ -400,6 +400,7 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
   const authorName = post?.authorName || post?.author_name || "School";
 
   const isMine = currentUserId && authorId && currentUserId === authorId;
+  const isAdminPost = String(authorRole || "").toLowerCase() === "admin";
   const [boostOpen, setBoostOpen] = useState(false);
 
   // ✅ 3-dots actions
@@ -605,32 +606,53 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
         <div className="px-4 pb-4">
           <div className="mt-3 border-t pt-2 grid grid-cols-2 gap-2">
-            <div className="flex">
-              {isMine ? (
-                <Button variant="outline" className="w-full justify-center text-gray-700" type="button" disabled>
-                  {tr("this_is_you", "This is you")}
+            {isAdminPost ? (
+              <div className="col-span-2">
+                <Button
+                  variant="outline"
+                  className="w-full justify-center text-gray-700"
+                  type="button"
+                  disabled
+                >
+                  Official admin post
                 </Button>
-              ) : (
-                <FollowButton
-                  currentUserId={currentUserId}
-                  creatorId={authorId}
-                  creatorRole={authorRole}
-                  className="w-full justify-center"
-                />
-              )}
-            </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex">
+                  {isMine ? (
+                    <Button variant="outline" className="w-full justify-center text-gray-700" type="button" disabled>
+                      {tr("this_is_you", "This is you")}
+                    </Button>
+                  ) : (
+                    <FollowButton
+                      currentUserId={currentUserId}
+                      creatorId={authorId}
+                      creatorRole={authorRole}
+                      className="w-full justify-center"
+                    />
+                  )}
+                </div>
 
-            <Link to={messageUrl} className="w-full">
-              <Button
-                variant="ghost"
-                className="w-full justify-center text-gray-700"
-                type="button"
-                disabled={!authorId || !currentUserId || isMine}
-                title={!authorId ? tr("missing_author_id", "Missing author id") : isMine ? tr("cant_message_self", "You can't message yourself") : tr("message", "Message")}
-              >
-                <MessageCircle className="h-4 w-4 mr-2" /> {tr("message", "Message")}
-              </Button>
-            </Link>
+                <Link to={messageUrl} className="w-full">
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-center text-gray-700"
+                    type="button"
+                    disabled={!authorId || !currentUserId || isMine}
+                    title={
+                      !authorId
+                        ? tr("missing_author_id", "Missing author id")
+                        : isMine
+                        ? tr("cant_message_self", "You can't message yourself")
+                        : tr("message", "Message")
+                    }
+                  >
+                    <MessageCircle className="h-4 w-4 mr-2" /> {tr("message", "Message")}
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
         </div>
 

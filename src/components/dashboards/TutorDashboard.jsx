@@ -466,8 +466,8 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, tr, au
   const authorId = post?.authorId || post?.user_id || post?.author_id;
   const authorRole = post?.authorRole || post?.creator_role || "tutor";
   const authorName = post?.authorName || post?.author_name || "Tutor";
-
   const isMine = !!(currentUserId && authorId && currentUserId === authorId);
+  const isAdminPost = String(authorRole || "").toLowerCase() === "admin";
   const [boostOpen, setBoostOpen] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);
@@ -717,39 +717,60 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, tr, au
 
         <div className="px-4 pb-4">
           <div className="mt-3 border-t pt-2 grid grid-cols-2 gap-2">
-            <div className="flex">
-              {isMine ? (
-                subscriptionModeEnabled ? (
+            {isAdminPost ? (
+              <div className="col-span-2">
+                <Button
+                  variant="outline"
+                  className="w-full justify-center text-gray-700"
+                  type="button"
+                  disabled
+                >
+                  Official admin post
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="flex">
+                  {isMine ? (
+                    subscriptionModeEnabled ? (
+                      <Button
+                        variant="outline"
+                        className="w-full justify-center text-gray-700"
+                        type="button"
+                        onClick={() => setBoostOpen(true)}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2" /> {tr?.("boost_your_post", "Boost your post")}
+                      </Button>
+                    ) : null
+                  ) : (
+                    <FollowButton
+                      currentUserId={currentUserId}
+                      creatorId={authorId}
+                      creatorRole={authorRole}
+                      className="w-full justify-center"
+                    />
+                  )}
+                </div>
+
+                <Link to={messageUrl} className="w-full">
                   <Button
-                    variant="outline"
+                    variant="ghost"
                     className="w-full justify-center text-gray-700"
                     type="button"
-                    onClick={() => setBoostOpen(true)}
+                    disabled={!authorId || !currentUserId || isMine}
+                    title={
+                      !authorId
+                        ? tr?.("missing_author_id", "Missing author id")
+                        : isMine
+                        ? tr?.("cant_message_self", "You can't message yourself")
+                        : tr?.("message", "Message")
+                    }
                   >
-                    <Sparkles className="h-4 w-4 mr-2" /> {tr?.("boost_your_post","Boost your post")}
+                    <MessageSquare className="h-4 w-4 mr-2" /> {tr?.("message", "Message")}
                   </Button>
-                ) : null
-              ) : (
-                <FollowButton
-                  currentUserId={currentUserId}
-                  creatorId={authorId}
-                  creatorRole={authorRole}
-                  className="w-full justify-center"
-                />
-              )}
-            </div>
-
-            <Link to={messageUrl} className="w-full">
-              <Button
-                variant="ghost"
-                className="w-full justify-center text-gray-700"
-                type="button"
-                disabled={!authorId || !currentUserId || isMine}
-                title={!authorId ? tr?.("missing_author_id","Missing author id") : isMine ? tr?.("cant_message_self","You can't message yourself") : tr?.("message","Message")}
-              >
-                <MessageSquare className="h-4 w-4 mr-2" /> {tr?.("message","Message")}
-              </Button>
-            </Link>
+                </Link>
+              </>
+            )}
           </div>
         </div>
 

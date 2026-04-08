@@ -360,10 +360,13 @@ function FollowButton({ currentUserId, creatorId, creatorRole, size = "sm", clas
 /* -------------------- Post Card UI -------------------- */
 function FeedPostCard({ post, myUid, onMessage, authorCountryByUid, tr }) {
   const navigate = useNavigate();
-  const canMessage = String(post.authorRole || "").toLowerCase() !== "school";
+  const authorRole = String(post?.authorRole || "").toLowerCase().trim();
+  const isAdminPost = authorRole === "admin";
+  const isSchool = authorRole === "school";
+  const canMessage = authorRole !== "school" && authorRole !== "admin";
+  const canFollow = authorRole !== "admin";
   const postDetailUrl = buildPostDetailUrl(post.id);
   const creatorProfileRoute = buildCreatorProfileRoute(post);
-  const isSchool = String(post?.authorRole || "").toLowerCase().trim() === "school";
 
   const fullText = String(post.text || "");
   const hasLongText = fullText.length > POST_PREVIEW_TEXT_LIMIT;
@@ -553,25 +556,44 @@ function FeedPostCard({ post, myUid, onMessage, authorCountryByUid, tr }) {
         {/* Follow + Message row */}
         <div className="px-4 pb-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <FollowButton
-              currentUserId={myUid}
-              creatorId={post.authorId}
-              creatorRole={post.authorRole}
-              size="sm"
-              className="rounded-xl w-full"
-            />
-            {canMessage ? (
+            {canFollow ? (
+              <FollowButton
+                currentUserId={myUid}
+                creatorId={post.authorId}
+                creatorRole={post.authorRole}
+                size="sm"
+                className="rounded-xl w-full"
+              />
+            ) : (
               <Button
-                className="rounded-xl"
-                variant="outline"
-                onClick={() => onMessage(post)}
                 type="button"
-                title={tr("message_this_creator", "Message this creator")}
+                variant="outline"
+                className="rounded-xl w-full"
+                disabled
               >
-                <Send className="h-4 w-4 mr-2" />
-                {tr("message", "Message")}
+                Official admin post
               </Button>
-            ) : null}
+            )}
+
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-xl w-full"
+              disabled={!canMessage || !post.authorId || !myUid}
+              onClick={() => {
+                if (canMessage && post.authorId && myUid) onMessage?.(post.authorId);
+              }}
+              title={
+                isAdminPost
+                  ? "Users cannot message admins"
+                  : isSchool
+                  ? "School messaging is handled by Admin/Advisor"
+                  : "Message"
+              }
+            >
+              <Send className="h-4 w-4 mr-2" />
+              {isAdminPost ? "Official admin post" : tr("message", "Message")}
+            </Button>
           </div>
         </div>
       </CardContent>
