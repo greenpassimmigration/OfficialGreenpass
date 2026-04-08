@@ -1487,9 +1487,7 @@ service cloud.firestore {
       );
     }
 
-    // ✅ Agent document checklist per client
-    // Collection: agent_client_checklists/{agentId}_{clientId}
-    // Fields: { agent_id/client_id OR agentId/clientId, documents: [{id,name,submitted,...}], ... }
+
     match /agent_client_checklists/{docId} {
       allow create: if signedIn() && (
         isAdmin() ||
@@ -1544,6 +1542,65 @@ service cloud.firestore {
         (
           resource.data.agentId is string &&
           resource.data.agentId == request.auth.uid
+        )
+      );
+    }
+
+        
+    match /tutor_student_checklists/{docId} {
+      allow create: if signedIn() && (
+        isAdmin() ||
+        (
+          request.resource.data.tutor_id is string &&
+          request.resource.data.tutor_id == request.auth.uid
+        ) ||
+        (
+          request.resource.data.tutorId is string &&
+          request.resource.data.tutorId == request.auth.uid
+        )
+      );
+
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.tutor_id is string &&
+          resource.data.tutor_id == request.auth.uid
+        ) ||
+        (
+          resource.data.tutorId is string &&
+          resource.data.tutorId == request.auth.uid
+        ) ||
+        (
+          resource.data.student_id is string &&
+          resource.data.student_id == request.auth.uid
+        ) ||
+        (
+          resource.data.studentId is string &&
+          resource.data.studentId == request.auth.uid
+        )
+      );
+
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.tutor_id is string &&
+          resource.data.tutor_id == request.auth.uid
+        ) ||
+        (
+          resource.data.tutorId is string &&
+          resource.data.tutorId == request.auth.uid
+        )
+      );
+
+      allow delete: if signedIn() && (
+        isAdmin() ||
+        (
+          resource.data.tutor_id is string &&
+          resource.data.tutor_id == request.auth.uid
+        ) ||
+        (
+          resource.data.tutorId is string &&
+          resource.data.tutorId == request.auth.uid
         )
       );
     }

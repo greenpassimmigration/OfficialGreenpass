@@ -1,4 +1,4 @@
-// src/pages/MyStudents.jsx
+// src/pages/TutorStudents.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,16 +39,18 @@ import {
 import { Html5Qrcode } from "html5-qrcode";
 
 /**
- * AGENT-ONLY PAGE (My Clients)
+ * TUTOR PAGE (Tutor Students)
  * SOURCE OF TRUTH:
- * - Client list = agent_clients only
- * - User profile details are loaded from users collection using IDs from agent_clients
- * - Document checklist per client stored in: agent_client_checklists/{agentId}_{clientId}
- * - QR scanner for agent:
- *    scan student QR -> calls backend acceptStudentReferralToAgent -> student added to agent_clients
+ * - Student list = tutor_students only
+ * - User profile details are loaded from users collection using IDs from tutor_students
+ * - Document checklist per student stored in: tutor_student_checklists/{tutorId}_{studentId}
+ * - QR scanner for tutor:
+ *    scan student QR -> calls backend acceptStudentReferralToTutor -> student added to tutor_students
  */
 
-const CHECKLIST_COLLECTION = "agent_client_checklists";
+const RELATION_COLLECTION = "tutor_students";
+const CHECKLIST_COLLECTION = "tutor_student_checklists";
+const ACCEPT_STUDENT_ENDPOINT = "acceptStudentReferralToTutor";
 
 const chunk = (arr, size = 10) => {
   const out = [];
@@ -56,19 +58,17 @@ const chunk = (arr, size = 10) => {
   return out;
 };
 
-const makeRelId = (agentId, clientId) => `${agentId}_${clientId}`;
+const makeRelId = (tutorId, studentId) => `${tutorId}_${studentId}`;
 
 const defaultDocTemplate = () => [
   { name: "Passport bio page" },
-  { name: "Study plan / SOP" },
-  { name: "School documents (LOA / offer)" },
-  { name: "Proof of funds / bank statement" },
-  { name: "Tuition payment receipt (if applicable)" },
-  { name: "Medical / IME (if applicable)" },
-  { name: "Police clearance (if applicable)" },
-  { name: "Birth certificate" },
-  { name: "National ID (if applicable)" },
-  { name: "Photos (passport size)" },
+  { name: "School records / transcript" },
+  { name: "English test result (if available)" },
+  { name: "Current study plan / goals" },
+  { name: "Assignment or practice materials" },
+  { name: "Class schedule / availability" },
+  { name: "Parent consent (if applicable)" },
+  { name: "Notes / learning assessment" },
 ];
 
 const cryptoRandomId = () => {
@@ -165,37 +165,41 @@ function extractStudentRefFromScannedText(raw) {
   }
 }
 
-function getClientIdFromRelation(data = {}) {
-  return data.studentId || data.student_id || data.clientId || data.client_id || null;
+function getStudentIdFromRelation(data = {}) {
+  return (
+    data.studentId ||
+    data.student_id ||
+    data.userId ||
+    data.user_id ||
+    data.clientId ||
+    data.client_id ||
+    null
+  );
 }
 
 function buildSuccessText(data) {
   let successText = "Student added successfully.";
 
   if (data?.alreadyExists) {
-    successText = "Student is already in your client list.";
+    successText = "Student is already in your student list.";
   } else if (data?.student?.full_name) {
-    successText = `${data.student.full_name} added to your client list.`;
-  }
-
-  if (data?.assignmentLocked) {
-    successText += " Existing assigned agent was not changed.";
+    successText = `${data.student.full_name} added to your student list.`;
   }
 
   return successText;
 }
 
-export default function MyStudents() {
-  const [clients, setClients] = useState([]);
-  const [removableClientIds, setRemovableClientIds] = useState(new Set());
-  const [checklistsByClient, setChecklistsByClient] = useState({});
+export default function TutorStudents() {
+  const [students, setStudents] = useState([]);
+  const [removableStudentIds, setRemovableStudentIds] = useState(new Set());
+  const [checklistsByStudent, setChecklistsByStudent] = useState({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [errorText, setErrorText] = useState("");
   const [searchParams] = useSearchParams();
 
   const [docsOpen, setDocsOpen] = useState(false);
-  const [activeClient, setActiveClient] = useState(null);
+  const [activeStudent, setActiveStudent] = useState(null);
   const [docsSaving, setDocsSaving] = useState(false);
   const [docName, setDocName] = useState("");
 
@@ -207,7 +211,7 @@ export default function MyStudents() {
   const [manualQrValue, setManualQrValue] = useState("");
   const [cameraSupported, setCameraSupported] = useState(true);
 
-  const qrRegionIdRef = useRef(`agent-student-qr-reader-${Math.random().toString(36).slice(2)}`);
+  const qrRegionIdRef = useRef(`tutor-student-qr-reader-${Math.random().toString(36).slice(2)}`);
   const qrScannerRef = useRef(null);
   const handledTokenRef = useRef("");
   const isMountedRef = useRef(true);
@@ -218,31 +222,31 @@ export default function MyStudents() {
     };
   }, []);
 
-  const openDocs = (client) => {
-    setActiveClient(client);
+  const openDocs = (student) => {
+    setActiveStudent(student);
     setDocName("");
     setDocsOpen(true);
   };
 
   const closeDocs = () => {
     setDocsOpen(false);
-    setActiveClient(null);
+    setActiveStudent(null);
     setDocName("");
     setDocsSaving(false);
   };
 
   const activeDocs = useMemo(() => {
-    if (!activeClient?.id) return [];
-    return normalizeDocs(checklistsByClient[activeClient.id] || []);
-  }, [activeClient?.id, checklistsByClient]);
+    if (!activeStudent?.id) return [];
+    return normalizeDocs(checklistsByStudent[activeStudent.id] || []);
+  }, [activeStudent?.id, checklistsByStudent]);
 
-  const saveChecklist = async (agentId, clientId, nextDocs) => {
-    const relId = makeRelId(agentId, clientId);
+  const saveChecklist = async (tutorId, studentId, nextDocs) => {
+    const relId = makeRelId(tutorId, studentId);
     const ref = doc(db, CHECKLIST_COLLECTION, relId);
 
     const payload = {
-      agent_id: agentId,
-      client_id: clientId,
+      tutor_id: tutorId,
+      student_id: studentId,
       documents: nextDocs.map((d) => ({
         id: d.id,
         name: d.name,
@@ -258,16 +262,16 @@ export default function MyStudents() {
 
     if (!isMountedRef.current) return;
 
-    setChecklistsByClient((prev) => ({
+    setChecklistsByStudent((prev) => ({
       ...prev,
-      [clientId]: payload.documents,
+      [studentId]: payload.documents,
     }));
   };
 
   const handleToggleDoc = async (docId) => {
     const auth = getAuth();
     const me = auth.currentUser;
-    if (!me || !activeClient?.id) return;
+    if (!me || !activeStudent?.id) return;
 
     const next = activeDocs.map((d) =>
       d.id === docId ? { ...d, submitted: !d.submitted, updated_at: new Date().toISOString() } : d
@@ -275,7 +279,7 @@ export default function MyStudents() {
 
     setDocsSaving(true);
     try {
-      await saveChecklist(me.uid, activeClient.id, next);
+      await saveChecklist(me.uid, activeStudent.id, next);
     } catch (e) {
       console.error("Checklist toggle failed:", e);
       setErrorText(e?.message || "Failed to update document checklist.");
@@ -290,7 +294,7 @@ export default function MyStudents() {
 
     const auth = getAuth();
     const me = auth.currentUser;
-    if (!me || !activeClient?.id) return;
+    if (!me || !activeStudent?.id) return;
 
     const next = [
       ...activeDocs,
@@ -305,7 +309,7 @@ export default function MyStudents() {
 
     setDocsSaving(true);
     try {
-      await saveChecklist(me.uid, activeClient.id, next);
+      await saveChecklist(me.uid, activeStudent.id, next);
       if (isMountedRef.current) setDocName("");
     } catch (e) {
       console.error("Checklist add failed:", e);
@@ -318,13 +322,13 @@ export default function MyStudents() {
   const handleRemoveDoc = async (docId) => {
     const auth = getAuth();
     const me = auth.currentUser;
-    if (!me || !activeClient?.id) return;
+    if (!me || !activeStudent?.id) return;
 
     const next = activeDocs.filter((d) => d.id !== docId);
 
     setDocsSaving(true);
     try {
-      await saveChecklist(me.uid, activeClient.id, next);
+      await saveChecklist(me.uid, activeStudent.id, next);
     } catch (e) {
       console.error("Checklist remove failed:", e);
       setErrorText(e?.message || "Failed to remove document.");
@@ -336,7 +340,7 @@ export default function MyStudents() {
   const handleApplyTemplate = async () => {
     const auth = getAuth();
     const me = auth.currentUser;
-    if (!me || !activeClient?.id) return;
+    if (!me || !activeStudent?.id) return;
 
     const base = defaultDocTemplate().map((d) => ({
       id: cryptoRandomId(),
@@ -348,7 +352,7 @@ export default function MyStudents() {
 
     setDocsSaving(true);
     try {
-      await saveChecklist(me.uid, activeClient.id, base);
+      await saveChecklist(me.uid, activeStudent.id, base);
     } catch (e) {
       console.error("Checklist template failed:", e);
       setErrorText(e?.message || "Failed to apply template.");
@@ -357,8 +361,8 @@ export default function MyStudents() {
     }
   };
 
-  const handleMessage = (clientId) => {
-    window.location.href = createPageUrl(`Messages?to=${clientId}`);
+  const handleMessage = (studentId) => {
+    window.location.href = createPageUrl(`Messages?to=${studentId}`);
   };
 
   const fetchData = useCallback(async () => {
@@ -370,28 +374,28 @@ export default function MyStudents() {
       const me = auth.currentUser;
 
       if (!me) {
-        setClients([]);
-        setRemovableClientIds(new Set());
-        setChecklistsByClient({});
+        setStudents([]);
+        setRemovableStudentIds(new Set());
+        setChecklistsByStudent({});
         setLoading(false);
         return;
       }
 
-      const agentClientQueries = [
-        query(collection(db, "agent_clients"), where("agentId", "==", me.uid)),
-        query(collection(db, "agent_clients"), where("agent_id", "==", me.uid)),
+      const relationQueries = [
+        query(collection(db, RELATION_COLLECTION), where("tutorId", "==", me.uid)),
+        query(collection(db, RELATION_COLLECTION), where("tutor_id", "==", me.uid)),
       ];
 
-      const agentClientSnapshots = await Promise.all(
-        agentClientQueries.map((qRef) =>
+      const relationSnapshots = await Promise.all(
+        relationQueries.map((qRef) =>
           getDocs(qRef).catch((err) => {
-            console.error("agent_clients query failed:", err);
+            console.error(`${RELATION_COLLECTION} query failed:`, err);
             return { docs: [] };
           })
         )
       );
 
-      const relationDocs = agentClientSnapshots.flatMap((snap) => snap.docs || []);
+      const relationDocs = relationSnapshots.flatMap((snap) => snap.docs || []);
 
       const seenRelationDocIds = new Set();
       const uniqueRelationDocs = relationDocs.filter((d) => {
@@ -405,10 +409,10 @@ export default function MyStudents() {
       const removableIds = new Set();
 
       uniqueRelationDocs.forEach((d) => {
-        const clientId = getClientIdFromRelation(d.data() || {});
-        if (!clientId) return;
-        relationUserIds.push(clientId);
-        removableIds.add(clientId);
+        const studentId = getStudentIdFromRelation(d.data() || {});
+        if (!studentId) return;
+        relationUserIds.push(studentId);
+        removableIds.add(studentId);
       });
 
       const uniqueUserIds = Array.from(new Set(relationUserIds));
@@ -425,7 +429,7 @@ export default function MyStudents() {
       }
 
       const seenUserIds = new Set();
-      const clientDocs = relationUsers.filter((u) => {
+      const studentDocs = relationUsers.filter((u) => {
         if (!u?.id) return false;
         if (seenUserIds.has(u.id)) return false;
         seenUserIds.add(u.id);
@@ -434,8 +438,8 @@ export default function MyStudents() {
 
       const map = {};
       const checklistQueries = [
-        query(collection(db, CHECKLIST_COLLECTION), where("agent_id", "==", me.uid)),
-        query(collection(db, CHECKLIST_COLLECTION), where("agentId", "==", me.uid)),
+        query(collection(db, CHECKLIST_COLLECTION), where("tutor_id", "==", me.uid)),
+        query(collection(db, CHECKLIST_COLLECTION), where("tutorId", "==", me.uid)),
       ];
 
       const checklistSnapshots = await Promise.all(
@@ -450,21 +454,21 @@ export default function MyStudents() {
       checklistSnapshots.forEach((snap) => {
         (snap.docs || []).forEach((d) => {
           const data = d.data() || {};
-          const cid = data.client_id || data.clientId;
-          if (!cid) return;
-          map[cid] = Array.isArray(data.documents) ? data.documents : [];
+          const sid = data.student_id || data.studentId;
+          if (!sid) return;
+          map[sid] = Array.isArray(data.documents) ? data.documents : [];
         });
       });
 
       if (!isMountedRef.current) return;
 
-      setClients(clientDocs);
-      setRemovableClientIds(removableIds);
-      setChecklistsByClient(map);
+      setStudents(studentDocs);
+      setRemovableStudentIds(removableIds);
+      setChecklistsByStudent(map);
     } catch (err) {
-      console.error("Error fetching clients/checklists:", err);
+      console.error("Error fetching students/checklists:", err);
       if (isMountedRef.current) {
-        setErrorText(err?.message || "Failed to load clients.");
+        setErrorText(err?.message || "Failed to load students.");
       }
     } finally {
       if (isMountedRef.current) {
@@ -524,7 +528,7 @@ export default function MyStudents() {
         const idToken = await me.getIdToken();
         const base = getFunctionsBase();
 
-        const res = await fetch(`${base}/acceptStudentReferralToAgent`, {
+        const res = await fetch(`${base}/${ACCEPT_STUDENT_ENDPOINT}`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -550,7 +554,7 @@ export default function MyStudents() {
           closeScanner();
         }, 900);
       } catch (e) {
-        console.error("acceptStudentReferralToAgent failed:", e);
+        console.error(`${ACCEPT_STUDENT_ENDPOINT} failed:`, e);
         handledTokenRef.current = "";
         if (isMountedRef.current) {
           setScannerError(e?.message || "Failed to add student.");
@@ -626,41 +630,41 @@ export default function MyStudents() {
     }, 250);
   };
 
-  const handleRemoveClient = async (client) => {
+  const handleRemoveStudent = async (student) => {
     const auth = getAuth();
     const me = auth.currentUser;
-    if (!me || !client?.id) return;
-    if (!removableClientIds.has(client.id)) return;
+    if (!me || !student?.id) return;
+    if (!removableStudentIds.has(student.id)) return;
 
     const ok = window.confirm(
-      `Remove ${client.full_name || client.email || "this client"} from your client list?`
+      `Remove ${student.full_name || student.email || "this student"} from your student list?`
     );
     if (!ok) return;
 
     try {
-      await deleteDoc(doc(db, "agent_clients", makeRelId(me.uid, client.id)));
+      await deleteDoc(doc(db, RELATION_COLLECTION, makeRelId(me.uid, student.id)));
 
       try {
-        await deleteDoc(doc(db, CHECKLIST_COLLECTION, makeRelId(me.uid, client.id)));
+        await deleteDoc(doc(db, CHECKLIST_COLLECTION, makeRelId(me.uid, student.id)));
       } catch {}
 
       if (!isMountedRef.current) return;
 
-      setClients((prev) => prev.filter((c) => c.id !== client.id));
-      setRemovableClientIds((prev) => {
+      setStudents((prev) => prev.filter((s) => s.id !== student.id));
+      setRemovableStudentIds((prev) => {
         const next = new Set(prev);
-        next.delete(client.id);
+        next.delete(student.id);
         return next;
       });
-      setChecklistsByClient((prev) => {
+      setChecklistsByStudent((prev) => {
         const next = { ...prev };
-        delete next[client.id];
+        delete next[student.id];
         return next;
       });
     } catch (e) {
-      console.error("Remove client failed:", e);
+      console.error("Remove student failed:", e);
       if (isMountedRef.current) {
-        setErrorText(e?.message || "Failed to remove client.");
+        setErrorText(e?.message || "Failed to remove student.");
       }
     }
   };
@@ -676,7 +680,7 @@ export default function MyStudents() {
     const process = async () => {
       try {
         await handleAcceptStudentQr(studentRef);
-        window.history.replaceState({}, "", "/MyStudents");
+        window.history.replaceState({}, "", "/TutorStudents");
       } catch (err) {
         console.error(err);
       }
@@ -691,16 +695,16 @@ export default function MyStudents() {
     };
   }, [stopScanner]);
 
-  const filteredClients = useMemo(() => {
+  const filteredStudents = useMemo(() => {
     const s = searchTerm.toLowerCase().trim();
-    if (!s) return clients;
+    if (!s) return students;
 
-    return clients.filter(
-      (c) =>
-        String(c.full_name || "").toLowerCase().includes(s) ||
-        String(c.email || "").toLowerCase().includes(s)
+    return students.filter(
+      (student) =>
+        String(student.full_name || "").toLowerCase().includes(s) ||
+        String(student.email || "").toLowerCase().includes(s)
     );
-  }, [clients, searchTerm]);
+  }, [students, searchTerm]);
 
   if (loading) {
     return (
@@ -717,10 +721,10 @@ export default function MyStudents() {
     <div className="p-4 sm:p-6">
       <div className="flex items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold">My Clients</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold">Tutor Students</h1>
           <div className="mt-2 hidden sm:flex items-center gap-2 text-sm text-gray-600">
             <ClipboardList className="h-4 w-4" />
-            Track required documents per client
+            Track required documents per student
           </div>
         </div>
 
@@ -738,12 +742,12 @@ export default function MyStudents() {
 
       <Card className="rounded-2xl">
         <CardHeader>
-          <CardTitle>My Clients List</CardTitle>
+          <CardTitle>My Students List</CardTitle>
           <div className="mt-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
               <Input
-                placeholder="Search by client name or email..."
+                placeholder="Search by student name or email..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 rounded-xl"
@@ -757,7 +761,7 @@ export default function MyStudents() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Client</TableHead>
+                  <TableHead>Student</TableHead>
                   <TableHead>Docs</TableHead>
                   <TableHead>Profile</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -765,25 +769,25 @@ export default function MyStudents() {
               </TableHeader>
 
               <TableBody>
-                {filteredClients.map((client) => {
-                  const isRemovable = removableClientIds.has(client.id);
+                {filteredStudents.map((student) => {
+                  const isRemovable = removableStudentIds.has(student.id);
 
                   return (
-                    <TableRow key={client.id}>
+                    <TableRow key={student.id}>
                       <TableCell>
-                        <div className="font-medium">{client.full_name || "Unnamed"}</div>
-                        <div className="text-sm text-muted-foreground">{client.email || "No email"}</div>
+                        <div className="font-medium">{student.full_name || "Unnamed"}</div>
+                        <div className="text-sm text-muted-foreground">{student.email || "No email"}</div>
                       </TableCell>
 
                       <TableCell className="whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          <ProgressBadge docs={checklistsByClient[client.id]} />
+                          <ProgressBadge docs={checklistsByStudent[student.id]} />
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
                             className="rounded-xl"
-                            onClick={() => openDocs(client)}
+                            onClick={() => openDocs(student)}
                           >
                             <FileCheck className="h-4 w-4 mr-2" />
                             Documents
@@ -793,10 +797,10 @@ export default function MyStudents() {
 
                       <TableCell className="whitespace-nowrap">
                         <Badge
-                          variant={client.onboarding_completed ? "default" : "secondary"}
+                          variant={student.onboarding_completed ? "default" : "secondary"}
                           className="rounded-full"
                         >
-                          {client.onboarding_completed ? "Complete" : "Incomplete"}
+                          {student.onboarding_completed ? "Complete" : "Incomplete"}
                         </Badge>
                       </TableCell>
 
@@ -806,7 +810,7 @@ export default function MyStudents() {
                             variant="outline"
                             size="sm"
                             className="rounded-xl"
-                            onClick={() => handleMessage(client.id)}
+                            onClick={() => handleMessage(student.id)}
                           >
                             <MessageSquare className="h-4 w-4 mr-2" />
                             Message
@@ -818,9 +822,9 @@ export default function MyStudents() {
                             className="rounded-xl"
                             disabled={!isRemovable}
                             title={
-                              isRemovable ? "Remove from your client list" : "Client cannot be removed"
+                              isRemovable ? "Remove from your student list" : "Student cannot be removed"
                             }
-                            onClick={() => handleRemoveClient(client)}
+                            onClick={() => handleRemoveStudent(student)}
                           >
                             <Trash2 className="h-4 w-4 mr-2" />
                             Remove
@@ -835,18 +839,18 @@ export default function MyStudents() {
           </div>
 
           <div className="md:hidden grid grid-cols-1 gap-4">
-            {filteredClients.map((client) => {
-              const isRemovable = removableClientIds.has(client.id);
+            {filteredStudents.map((student) => {
+              const isRemovable = removableStudentIds.has(student.id);
 
               return (
-                <Card key={client.id} className="p-4 rounded-2xl">
+                <Card key={student.id} className="p-4 rounded-2xl">
                   <div className="flex justify-between items-start gap-3">
                     <div>
-                      <p className="font-bold">{client.full_name || "Unnamed"}</p>
-                      <p className="text-sm text-gray-500">{client.email || "No email"}</p>
+                      <p className="font-bold">{student.full_name || "Unnamed"}</p>
+                      <p className="text-sm text-gray-500">{student.email || "No email"}</p>
                       <div className="mt-2 flex items-center gap-2">
                         <span className="text-xs text-gray-500">Docs</span>
-                        <ProgressBadge docs={checklistsByClient[client.id]} />
+                        <ProgressBadge docs={checklistsByStudent[student.id]} />
                       </div>
                     </div>
 
@@ -855,7 +859,7 @@ export default function MyStudents() {
                         variant="outline"
                         size="sm"
                         className="rounded-xl"
-                        onClick={() => openDocs(client)}
+                        onClick={() => openDocs(student)}
                       >
                         <FileCheck className="h-4 w-4 mr-2" />
                         Docs
@@ -865,7 +869,7 @@ export default function MyStudents() {
                         variant="outline"
                         size="sm"
                         className="rounded-xl"
-                        onClick={() => handleMessage(client.id)}
+                        onClick={() => handleMessage(student.id)}
                       >
                         <MessageSquare className="h-4 w-4 mr-2" />
                         Message
@@ -877,9 +881,9 @@ export default function MyStudents() {
                         className="rounded-xl"
                         disabled={!isRemovable}
                         title={
-                          isRemovable ? "Remove from your client list" : "Client cannot be removed"
+                          isRemovable ? "Remove from your student list" : "Student cannot be removed"
                         }
-                        onClick={() => handleRemoveClient(client)}
+                        onClick={() => handleRemoveStudent(student)}
                       >
                         <Trash2 className="h-4 w-4 mr-2" />
                         Remove
@@ -891,10 +895,10 @@ export default function MyStudents() {
                     <div>
                       <p className="text-gray-500">Profile</p>
                       <Badge
-                        variant={client.onboarding_completed ? "default" : "secondary"}
+                        variant={student.onboarding_completed ? "default" : "secondary"}
                         className="mt-1 rounded-full"
                       >
-                        {client.onboarding_completed ? "Complete" : "Incomplete"}
+                        {student.onboarding_completed ? "Complete" : "Incomplete"}
                       </Badge>
                     </div>
                   </div>
@@ -903,13 +907,13 @@ export default function MyStudents() {
             })}
           </div>
 
-          {filteredClients.length === 0 && (
+          {filteredStudents.length === 0 && (
             <div className="text-center py-12">
               <div className="mx-auto h-12 w-12 rounded-full bg-gray-100 flex items-center justify-center">
                 <FileCheck className="h-6 w-6 text-gray-500" />
               </div>
-              <h3 className="mt-2 text-sm font-medium text-gray-900">No clients found</h3>
-              <p className="mt-1 text-sm text-gray-500">No clients match your search criteria.</p>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No students found</h3>
+              <p className="mt-1 text-sm text-gray-500">No students match your search criteria.</p>
             </div>
           )}
         </CardContent>
@@ -918,13 +922,13 @@ export default function MyStudents() {
       <Modal
         open={docsOpen}
         onClose={closeDocs}
-        title={activeClient ? `Documents • ${activeClient.full_name || activeClient.email || "Client"}` : "Documents"}
+        title={activeStudent ? `Documents • ${activeStudent.full_name || activeStudent.email || "Student"}` : "Documents"}
       >
-        {!activeClient ? null : (
+        {!activeStudent ? null : (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm text-gray-600">
-                Create a required document list for this client, then tick off items as they submit them.
+                Create a required document list for this student, then tick off items as they submit them.
               </div>
 
               <div className="flex items-center gap-2">
@@ -945,7 +949,7 @@ export default function MyStudents() {
             <div className="flex items-center gap-2">
               <Input
                 className="rounded-xl"
-                placeholder="Add a document (e.g., Bank statement)…"
+                placeholder="Add a document (e.g., assessment form)…"
                 value={docName}
                 onChange={(e) => setDocName(e.target.value)}
                 onKeyDown={(e) => {
