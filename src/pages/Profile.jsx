@@ -48,7 +48,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { UploadFile } from "@/api/integrations";
 import { auth, db, storage } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
+  collection,
+  getDocs,
+  query,
+  where,
+  limit,
+} from "firebase/firestore";
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { useTr } from "@/i18n/useTr";
 import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
@@ -560,50 +571,14 @@ function roleMeta(role, tr) {
   return { label: tr("role_student", "Student"), icon: <User className="w-5 h-5" /> };
 }
 
-async function syncSchoolCollections({ uid, payload }) {
-  const name = (payload.school_name || "").trim();
-  if (!name) return "";
-
-  const baseInstitutionId =
-    (payload.institution_id || "").trim() || `${slugify(name)}-${uid.substring(0, 6)}`;
-
-  let institutionId = baseInstitutionId;
-
-  const tryPickInstitutionId = async () => {
-    const instRef0 = doc(db, "institutions", institutionId);
-    const instSnap0 = await getDoc(instRef0);
-
-    if (!instSnap0.exists()) return { institutionId, instRef: instRef0 };
-
-    const existing = instSnap0.data() || {};
-    const existingOwner = existing.user_id;
-
-    if (existingOwner === uid) return { institutionId, instRef: instRef0 };
-
-    const suffix = Date.now().toString(36);
-    institutionId = `${baseInstitutionId}-${suffix}`;
-    const instRef1 = doc(db, "institutions", institutionId);
-    return { institutionId, instRef: instRef1 };
-  };
-
-  const { institutionId: finalInstitutionId, instRef } = await tryPickInstitutionId();
-  const spRef = doc(db, "school_profiles", uid);
-
-  const institutionData = {
-    user_id: uid,
-    name,
-    short_name: name,
-    website: payload.website || "",
-    city: payload.location || "",
-    description: payload.about || "",
-    updated_at: serverTimestamp(),
-  };
+async function syncSchoolDraftOnly({ uid, payload }) {
+  const schoolName = String(payload.school_name || "").trim();
 
   const schoolProfileData = {
-    institution_id: finalInstitutionId,
+    institution_id: String(payload.institution_id || "").trim(),
     user_id: uid,
-    name,
-    school_name: name,
+    name: schoolName,
+    school_name: schoolName,
     type: payload.type || "",
     school_level: payload.type || "",
     location: payload.location || "",
@@ -613,12 +588,16 @@ async function syncSchoolCollections({ uid, payload }) {
     updated_at: serverTimestamp(),
   };
 
-  await Promise.all([
-    setDoc(instRef, institutionData, { merge: true }),
-    setDoc(spRef, schoolProfileData, { merge: true }),
-  ]);
+  await setDoc(
+    doc(db, "users", uid),
+    {
+      school_profile: schoolProfileData,
+      updated_at: serverTimestamp(),
+    },
+    { merge: true }
+  );
 
-  return finalInstitutionId;
+  return schoolProfileData.institution_id || "";
 }
 
 function ProfileHeader({
@@ -1152,12 +1131,29 @@ export default function Profile() {
       setRole(resolvedRole);
       setUserDoc(u);
 
-      let schoolProfileDoc = null;
-      if (resolvedRole === "school") {
-        const spRef = doc(db, "school_profiles", userId);
-        const spSnap = await getDoc(spRef);
-        if (spSnap.exists()) schoolProfileDoc = spSnap.data();
-      }
+      let institutionDoc = null;
+        if (resolvedRole === "school") {
+          try {
+            const directInstitutionId = String(
+              u.school_profile?.institution_id ||
+              u.linked_institution_id ||
+              ""
+            ).trim();
+
+            if (directInstitutionId) {
+              const directSnap = await getDoc(doc(db, "institutions", directInstitutionId));
+              if (directSnap.exists()) {
+                const d = directSnap.data() || {};
+                if (String(d.user_id || "").trim() === String(userId)) {
+                  institutionDoc = { id: directSnap.id, ...d };
+                }
+              }
+            }
+          } catch (e) {
+            console.error("Failed to load linked institution for school profile:", e);
+            institutionDoc = null;
+          }
+        }
 
       const resolvedBio =
         u.bio ||
@@ -1226,17 +1222,39 @@ export default function Profile() {
         experience_years: u.tutor_profile?.experience_years || "",
         hourly_rate: u.tutor_profile?.hourly_rate || "",
 
-        institution_id: u.school_profile?.institution_id || schoolProfileDoc?.institution_id || "",
-        school_name:
-          u.school_profile?.school_name ||
-          schoolProfileDoc?.school_name ||
-          schoolProfileDoc?.name ||
+        institution_id:
+          institutionDoc?.id ||
+          u.school_profile?.institution_id ||
           "",
+
+        school_name:
+          institutionDoc?.name ||
+          u.school_profile?.school_name ||
+          "",
+
         type:
-          u.school_profile?.type || schoolProfileDoc?.type || schoolProfileDoc?.school_level || "",
-        location: u.school_profile?.location || schoolProfileDoc?.location || "",
-        website: u.school_profile?.website || schoolProfileDoc?.website || "",
-        about: u.school_profile?.about || schoolProfileDoc?.about || "",
+          institutionDoc?.type ||
+          institutionDoc?.school_type ||
+          institutionDoc?.school_level ||
+          u.school_profile?.type ||
+          "",
+
+        location:
+          institutionDoc?.city ||
+          institutionDoc?.location ||
+          u.school_profile?.location ||
+          "",
+
+        website:
+          institutionDoc?.website ||
+          u.school_profile?.website ||
+          "",
+
+        about:
+          institutionDoc?.about ||
+          institutionDoc?.description ||
+          u.school_profile?.about ||
+          "",
 
         business_name: u.vendor_profile?.business_name || "",
         service_categories: u.vendor_profile?.service_categories || [],
@@ -1771,25 +1789,6 @@ export default function Profile() {
       }
     }
 
-    if (role === "school") {
-      if (!form.school_name?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_institution_name", "Institution name is required."));
-      }
-      if (!form.type?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_school_type", "School type is required."));
-      }
-      if (!form.location?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_city_location", "City/Location is required."));
-      }
-      if (!form.website?.trim()) {
-        setActiveTab("details");
-        return alert(tr("alerts.required_website", "Website is required."));
-      }
-    }
-
     if (role === "vendor") {
       if (!form.business_name?.trim()) {
         setActiveTab("details");
@@ -1873,31 +1872,6 @@ export default function Profile() {
           business_name: form.business_name || "",
           service_categories: form.service_categories || [],
           paypal_email: form.paypal_email || "",
-          bio: form.bio || "",
-        };
-      }
-
-      if (role === "school") {
-        const institutionId = await syncSchoolCollections({
-          uid,
-          payload: {
-            institution_id: form.institution_id || "",
-            school_name: form.school_name || "",
-            type: form.type || "",
-            location: form.location || "",
-            website: form.website || "",
-            about: form.about || "",
-            bio: form.bio || "",
-          },
-        });
-
-        updates.school_profile = {
-          institution_id: institutionId,
-          school_name: form.school_name || "",
-          type: form.type || "",
-          location: form.location || "",
-          website: form.website || "",
-          about: form.about || "",
           bio: form.bio || "",
         };
       }

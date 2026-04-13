@@ -33,6 +33,7 @@ import AdminBrandSettings from "@/pages/AdminBrandSettings";
 import AdminChatSettings from "@/pages/AdminChatSettings";
 import AdminBankSettings from "@/pages/AdminBankSettings";
 import AdminReports from "@/pages/AdminReports";
+import AdminClaimRequests from "@/pages/AdminClaimRequests";
 import AgentAgreement from "@/pages/AgentAgreement";
 import Checkout from "@/pages/Checkout";
 import ReservationStatus from "@/pages/ReservationStatus";
@@ -267,7 +268,7 @@ export default function App() {
           }
         />
 
-        {/* Changed from school-only to any authenticated user */}
+        {/* Authenticated users can view school details */}
         <Route
           path="schooldetails"
           element={
@@ -277,7 +278,7 @@ export default function App() {
           }
         />
 
-        {/* Changed from school-only to any authenticated user */}
+        {/* Authenticated users can view program details */}
         <Route
           path="programdetails"
           element={
@@ -429,6 +430,14 @@ export default function App() {
           element={
             <RequireRole currentUser={currentUser} loading={loading} allow={["admin"]}>
               <AdminAgentAssignments />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="adminclaimrequests"
+          element={
+            <RequireRole currentUser={currentUser} loading={loading} allow={["admin"]}>
+              <AdminClaimRequests />
             </RequireRole>
           }
         />

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Chrome,
   Apple,
+  ShieldCheck,
 } from "lucide-react";
 
 import {
@@ -46,6 +47,10 @@ import {
   setDoc,
   serverTimestamp,
   getDoc,
+  addDoc,
+  query,
+  where,
+  limit,
 } from "firebase/firestore";
 import {
   onAuthStateChanged,
@@ -70,6 +75,7 @@ import {
 } from "@/components/ui/dialog";
 
 const PAGE_SIZE = 16;
+const CLAIM_REQUESTS_COLL = "institution_claim_requests";
 
 /* -----------------------------
    Subscription helper
@@ -153,6 +159,32 @@ const canonCountry = (v = "") => {
   if (lx === "new zealand" || lx === "nz") return "New Zealand";
   return x;
 };
+
+function normalizeRole(r) {
+  const v = String(r || "").toLowerCase().trim();
+  if (v === "student") return "user";
+  if (v === "users") return "user";
+  if (v === "tutors") return "tutor";
+  if (v === "agents") return "agent";
+  if (["user", "agent", "tutor", "school", "admin", "vendor", "support", "collaborator"].includes(v)) {
+    return v;
+  }
+  return "";
+}
+
+function isInstitutionPublicReady(inst) {
+  const status = String(inst?.status || "").toLowerCase().trim();
+  const visibility = String(inst?.visibility || "").toLowerCase().trim();
+  const isHidden = inst?.hidden === true || inst?.is_hidden === true || visibility === "hidden";
+
+  if (isHidden) return false;
+  if (!status) return true;
+  return ["active", "published", "public", "verified", "claimed", "unclaimed"].includes(status);
+}
+
+function isInstitutionClaimed(inst) {
+  return !!String(inst?.user_id || "").trim();
+}
 
 /* -----------------------------
    Skeletons
@@ -249,9 +281,13 @@ const getSchoolImageList = (item) => {
 const SchoolDetailsPanel = ({
   item,
   onContactClick,
+  onClaimClick,
+  claimSubmitting = false,
+  claimMessage = "",
   programs = [],
   onProgramClick,
   tr,
+  currentUserRole = "",
 }) => {
   const [showPrograms, setShowPrograms] = useState(false);
   const [imgIndex, setImgIndex] = useState(0);
@@ -294,6 +330,7 @@ const SchoolDetailsPanel = ({
 
   const list = Array.isArray(programs) ? programs : [];
   const hasPrograms = list.length > 0;
+  const canClaimFromDirectory = currentUserRole === "school" && !isInstitutionClaimed(item);
 
   const getProgramTitle = (p) =>
     p?.program_title || p?.programTitle || p?.title || p?.name || "Untitled program";
@@ -330,6 +367,9 @@ const SchoolDetailsPanel = ({
                 Featured
               </Badge>
             )}
+            {!isInstitutionClaimed(item) ? (
+              <Badge className="bg-blue-600 text-white">Unclaimed</Badge>
+            ) : null}
           </div>
 
           {hasMany ? (
@@ -386,15 +426,38 @@ const SchoolDetailsPanel = ({
                 </span>
               </div>
 
-              <div className="mt-4">
+              <div className="mt-4 space-y-3">
                 <Button className="w-full h-11 text-base" onClick={() => onContactClick?.(item)}>
                   <Mail className="w-4 h-4 mr-2" />
                   {tr?.("directory.school.contact", "Contact Us")}
                 </Button>
 
+                {canClaimFromDirectory ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full h-11 text-base"
+                    onClick={() => onClaimClick?.(item)}
+                    disabled={claimSubmitting}
+                  >
+                    {claimSubmitting ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4 mr-2" />
+                    )}
+                    {tr?.("directory.school.claim_profile", "Claim this profile")}
+                  </Button>
+                ) : null}
+
+                {claimMessage ? (
+                  <div className="text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                    {claimMessage}
+                  </div>
+                ) : null}
+
                 <button
                   type="button"
-                  className="mt-3 text-sm text-blue-600 underline hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-sm text-blue-600 underline hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={() => setShowPrograms((v) => !v)}
                   disabled={!hasPrograms}
                   title={
@@ -505,6 +568,8 @@ const DirectoryGridCard = ({ item, onOpenDetails, tr }) => {
     String(item?.kyc_status || "").toLowerCase() === "verified"
   );
 
+  const showUnclaimed = !isInstitutionClaimed(item);
+
   return (
     <button
       type="button"
@@ -538,11 +603,14 @@ const DirectoryGridCard = ({ item, onOpenDetails, tr }) => {
         </div>
 
         <div className="mt-2 text-center">
-          <div className="flex items-center justify-center gap-1">
+          <div className="flex items-center justify-center gap-1 flex-wrap">
             <div className="max-w-[240px] truncate text-base font-semibold text-gray-900">
               {name}
             </div>
             {isVerified ? <Award className="h-4 w-4 text-emerald-600" /> : null}
+            {showUnclaimed ? (
+              <Badge className="bg-blue-100 text-blue-800 border-blue-200">Unclaimed</Badge>
+            ) : null}
           </div>
 
           <div className="mt-1 line-clamp-2 text-sm text-gray-600">{basicInfo}</div>
@@ -615,24 +683,15 @@ export default function Directory() {
   const [oauthUser, setOauthUser] = useState(null);
   const [oauthName, setOauthName] = useState("");
 
-  const normalizeRole = useCallback((r) => {
-    const v = String(r || "").toLowerCase().trim();
-    if (v === "student") return "user";
-    if (v === "users") return "user";
-    if (v === "tutors") return "tutor";
-    if (v === "agents") return "agent";
-    if (["user", "agent", "tutor", "school", "admin", "vendor", "support"].includes(v)) {
-      return v;
-    }
-    return "";
-  }, []);
+  const [claimSubmitting, setClaimSubmitting] = useState(false);
+  const [claimMessage, setClaimMessage] = useState("");
 
   const detectRoleFromUserDoc = useCallback(
     (data) =>
       normalizeRole(
         data?.role || data?.selected_role || data?.user_type || data?.userType || ""
       ),
-    [normalizeRole]
+    []
   );
 
   useEffect(() => {
@@ -699,10 +758,13 @@ export default function Directory() {
 
     try {
       const instSnap = await getDocs(instRef);
-      const institutionsData = instSnap.docs.map((d) => ({
-        id: d.id,
-        ...((d.data && d.data()) || {}),
-      }));
+      const institutionsData = instSnap.docs
+        .map((d) => ({
+          id: d.id,
+          ...((d.data && d.data()) || {}),
+        }))
+        .filter((inst) => isInstitutionPublicReady(inst));
+
       setAllInstitutions(institutionsData || []);
     } catch (error) {
       console.error("Error loading institutions:", error);
@@ -958,7 +1020,7 @@ export default function Directory() {
         currentUserDoc?.userType ||
         ""
     );
-  }, [currentUserDoc, normalizeRole]);
+  }, [currentUserDoc]);
 
   const navToMessages = useCallback(
     ({ studentId, targetId, targetRole }) => {
@@ -1052,7 +1114,7 @@ export default function Directory() {
   );
 
   const afterAuthSuccess = useCallback(
-    (opts = {}) => {
+    async (opts = {}) => {
       const onboardingRole = opts?.onboardingRole;
 
       setAuthDialogOpen(false);
@@ -1072,6 +1134,9 @@ export default function Directory() {
         navigate(pendingAction.url, { state: pendingAction?.state || {} });
       } else if (pendingAction?.type === "contact" && pendingAction?.schoolItem) {
         onContactSchool(pendingAction.schoolItem);
+      } else if (pendingAction?.type === "claim" && pendingAction?.item) {
+        setSelectedKey(pendingAction.item.school_key || pendingAction.item.id);
+        setDetailsOpen(true);
       }
 
       setPendingAction(null);
@@ -1088,7 +1153,7 @@ export default function Directory() {
         throw new Error("Please enter your email and password.");
       }
       await signInWithEmailAndPassword(auth, email, loginPassword);
-      afterAuthSuccess();
+      await afterAuthSuccess();
     } catch (e) {
       setAuthError(e?.message || "Login failed. Please try again.");
     } finally {
@@ -1131,7 +1196,7 @@ export default function Directory() {
         { merge: true }
       );
 
-      afterAuthSuccess({ onboardingRole: signupRole });
+      await afterAuthSuccess({ onboardingRole: signupRole });
     } catch (e) {
       setAuthError(e?.message || "Sign up failed. Please try again.");
     } finally {
@@ -1163,7 +1228,7 @@ export default function Directory() {
   }, []);
 
   const isValidRole = (r) =>
-    ["user", "agent", "tutor"].includes(String(r || "").toLowerCase().trim());
+    ["user", "agent", "tutor", "school"].includes(String(r || "").toLowerCase().trim());
 
   const handleOAuthSignIn = useCallback(
     async (providerKey, intent = "login") => {
@@ -1187,7 +1252,7 @@ export default function Directory() {
         if (intent === "signup") {
           const role = String(signupRole || "").toLowerCase().trim();
           if (!isValidRole(role)) {
-            setAuthError("Please select a valid role (Student, Agent, or Tutor).");
+            setAuthError("Please select a valid role.");
             setAuthStep("role");
             return;
           }
@@ -1225,7 +1290,7 @@ export default function Directory() {
             return;
           }
 
-          afterAuthSuccess();
+          await afterAuthSuccess();
           return;
         }
 
@@ -1263,7 +1328,7 @@ export default function Directory() {
             { merge: true }
           );
 
-          afterAuthSuccess({ onboardingRole: role });
+          await afterAuthSuccess({ onboardingRole: role });
           return;
         }
 
@@ -1298,8 +1363,8 @@ export default function Directory() {
       if (!oauthUser?.uid) throw new Error("Missing user session. Please try again.");
 
       const role = String(signupRole).toLowerCase().trim();
-      if (!["user", "agent", "tutor"].includes(role)) {
-        throw new Error("Invalid role. Please choose Student, Agent, or Tutor.");
+      if (!["user", "agent", "tutor", "school"].includes(role)) {
+        throw new Error("Invalid role.");
       }
 
       const name = (oauthName || "").trim();
@@ -1328,7 +1393,7 @@ export default function Directory() {
         { merge: true }
       );
 
-      afterAuthSuccess({ onboardingRole: role });
+      await afterAuthSuccess({ onboardingRole: role });
     } catch (e) {
       setAuthError(e?.message || "Could not finish setup. Please try again.");
     } finally {
@@ -1388,6 +1453,100 @@ export default function Directory() {
       openAuthDialog({ type: "contact", schoolItem }, { forceStudent: true });
     },
     [currentUser, currentUserDoc, onContactSchool, openAuthDialog]
+  );
+
+  const submitClaimRequest = useCallback(
+    async (schoolItem) => {
+      if (!currentUser?.uid) {
+        openAuthDialog({ type: "claim", item: schoolItem }, { forceStudent: false });
+        return;
+      }
+
+      if (myRole !== "school") {
+        setClaimMessage("Only school accounts can claim school profiles.");
+        return;
+      }
+
+      if (!schoolItem?.id) {
+        setClaimMessage("This school profile is missing an institution id.");
+        return;
+      }
+
+      if (isInstitutionClaimed(schoolItem)) {
+        setClaimMessage("This school profile is already claimed.");
+        return;
+      }
+
+      setClaimSubmitting(true);
+      setClaimMessage("");
+
+      try {
+        const myPendingSnap = await getDocs(
+          query(
+            collection(db, CLAIM_REQUESTS_COLL),
+            where("requested_by_uid", "==", currentUser.uid),
+            where("status", "==", "pending"),
+            limit(1)
+          )
+        );
+
+        if (!myPendingSnap.empty) {
+          setClaimMessage("You already have a pending claim request under review.");
+          return;
+        }
+
+        const duplicateSnap = await getDocs(
+          query(
+            collection(db, CLAIM_REQUESTS_COLL),
+            where("institution_id", "==", schoolItem.id),
+            where("requested_by_uid", "==", currentUser.uid),
+            limit(10)
+          )
+        );
+
+        const duplicate = duplicateSnap.docs.some((d) => {
+          const status = String(d.data()?.status || "").toLowerCase().trim();
+          return status === "pending" || status === "approved";
+        });
+
+        if (duplicate) {
+          setClaimMessage("You already submitted a claim request for this school.");
+          return;
+        }
+
+        await addDoc(collection(db, CLAIM_REQUESTS_COLL), {
+          institution_id: schoolItem.id,
+          institution_name:
+            schoolItem.name ||
+            schoolItem.school_name ||
+            schoolItem.institution_name ||
+            "",
+          institution_country: schoolItem.country || schoolItem.school_country || "",
+          institution_country_code: schoolItem.country_code || schoolItem.countryCode || "",
+          requested_by_uid: currentUser.uid,
+          requested_by_email: currentUserDoc?.email || currentUser.email || "",
+          requested_by_name:
+            currentUserDoc?.full_name || currentUser.displayName || "",
+          requested_role: "school",
+          status: "pending",
+          claim_reason: "Requested from directory school listing.",
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp(),
+          reviewed_by: null,
+          reviewed_at: null,
+          approval_note: "",
+          rejection_reason: "",
+        });
+
+        setClaimMessage("Claim request submitted. An admin will review it.");
+      } catch (e) {
+        console.error("Claim request submission failed:", e);
+        setClaimMessage("Failed to submit claim request. Please try again.");
+      } finally {
+        setClaimSubmitting(false);
+      }
+    },
+    [currentUser, currentUserDoc, myRole, openAuthDialog]
   );
 
   const loading = loadingSchools;
@@ -1599,7 +1758,7 @@ export default function Directory() {
             <div className="mt-4 space-y-3">
               <div className="text-sm font-medium text-gray-900">Select your role</div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                 <Button
                   variant={signupRole === "user" ? "default" : "outline"}
                   className="h-11"
@@ -1623,6 +1782,14 @@ export default function Directory() {
                   disabled={authLoading}
                 >
                   Tutor
+                </Button>
+                <Button
+                  variant={signupRole === "school" ? "default" : "outline"}
+                  className="h-11"
+                  onClick={() => setSignupRole("school")}
+                  disabled={authLoading}
+                >
+                  School
                 </Button>
               </div>
 
@@ -1892,8 +2059,12 @@ export default function Directory() {
                   item={selectedItem}
                   programs={selectedPrograms}
                   onContactClick={onContactClick}
+                  onClaimClick={submitClaimRequest}
+                  claimSubmitting={claimSubmitting}
+                  claimMessage={claimMessage}
                   onProgramClick={onProgramClick}
                   tr={tr}
+                  currentUserRole={currentUserRole}
                 />
               </div>
             )}
@@ -1914,6 +2085,15 @@ export default function Directory() {
             )}
           </p>
         </div>
+
+        {currentUserRole === "school" ? (
+          <div className="mb-6 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-900">
+            <p className="font-semibold">School claiming is optional.</p>
+            <p className="text-sm text-blue-800 mt-1">
+              If you find your school here and it is unclaimed, open it and click “Claim this profile” to send a request for admin review.
+            </p>
+          </div>
+        ) : null}
 
         <div className="relative mb-8">
           <Card>
@@ -2027,6 +2207,7 @@ export default function Directory() {
                     tr={tr}
                     onOpenDetails={() => {
                       setSelectedKey(key);
+                      setClaimMessage("");
                       setDetailsOpen(true);
                     }}
                   />

@@ -11,11 +11,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Building,
-  Lock,
-  Mail,
-  User as UserIcon,
-  Eye,
-  EyeOff,
   Heart,
   Loader2,
 } from "lucide-react";
@@ -29,21 +24,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import SchoolForm from "@/components/admin/SchoolForm";
 
 /* ---------- Firebase Auth ---------- */
 import { auth, db } from "@/firebase";
-import {
-  GoogleAuthProvider,
-  OAuthProvider,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  fetchSignInMethodsForEmail,
-  updateProfile,
-  onAuthStateChanged,
-} from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 
 /* ---------- Firestore ---------- */
 import {
@@ -98,14 +83,6 @@ const normalizeUrl = (url) => {
   return `https://${s}`;
 };
 
-const buildNextHref = (nextPage) => {
-  const s = (nextPage || "").toString().trim();
-  if (!s) return createPageUrl("Dashboard");
-  if (s.startsWith("/")) return s;
-  if (s.includes("?") || s.includes("/")) return s;
-  return createPageUrl(s);
-};
-
 /* ---------- safe Firestore get (swallow permission-denied) ---------- */
 async function safeGetDoc(path, id) {
   try {
@@ -121,387 +98,11 @@ async function safeGetDoc(path, id) {
 
 /* ---------- role helpers ---------- */
 const VALID_ROLES = ["agent", "tutor", "school", "vendor"];
-const DEFAULT_ROLE = "user"; // student/parent
+const DEFAULT_ROLE = "user";
 
 function normalizeRole(r) {
   const v = (r || "").toString().trim().toLowerCase();
   return VALID_ROLES.includes(v) ? v : DEFAULT_ROLE;
-}
-
-function buildUserDoc({
-  email,
-  full_name = "",
-  userType = DEFAULT_ROLE,
-  signupEntryRole = DEFAULT_ROLE,
-}) {
-  return {
-    role: userType,
-    userType,
-    user_type: userType,
-    signup_entry_role: signupEntryRole,
-    email,
-    full_name,
-    phone: "",
-    country: "",
-    address: {
-      street: "",
-      ward: "",
-      district: "",
-      province: "",
-      postal_code: "",
-    },
-    profile_picture: "",
-    is_verified: false,
-    onboarding_completed: false,
-    created_at: serverTimestamp(),
-    updated_at: serverTimestamp(),
-  };
-}
-
-async function routeAfterAuth(navigate, fbUser, entryRole, nextPage) {
-  const roleToUse = normalizeRole(entryRole);
-  const ref = doc(db, "users", fbUser.uid);
-  const snap = await getDoc(ref);
-
-  if (!snap.exists()) {
-    await setDoc(
-      ref,
-      buildUserDoc({
-        email: fbUser.email || "",
-        full_name: fbUser.displayName || "",
-        userType: roleToUse,
-        signupEntryRole: roleToUse,
-      }),
-      { merge: true }
-    );
-
-    const qp = new URLSearchParams();
-    qp.set("role", roleToUse);
-    qp.set("lock", "1");
-    if (nextPage) qp.set("next", nextPage);
-    return navigate(`${createPageUrl("Onboarding")}?${qp.toString()}`);
-  }
-
-  const profile = snap.data();
-  if (!profile?.onboarding_completed) {
-    const qp = new URLSearchParams();
-    qp.set("role", normalizeRole(profile?.user_type || roleToUse));
-    qp.set("lock", "1");
-    if (nextPage) qp.set("next", nextPage);
-    return navigate(`${createPageUrl("Onboarding")}?${qp.toString()}`);
-  }
-
-  return navigate(buildNextHref(nextPage || "Dashboard"));
-}
-
-/* ---------- Inline Login Dialog ---------- */
-function LoginDialog({ open, onOpenChange, entryRole, nextPage }) {
-  const navigate = useNavigate();
-
-  const [mode, setMode] = useState("signin");
-  const [busy, setBusy] = useState(false);
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-
-  const [fullName, setFullName] = useState("");
-  const [confirm, setConfirm] = useState("");
-
-  const [showSigninPw, setShowSigninPw] = useState(false);
-  const [showPw, setShowPw] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
-
-  const [errorMsg, setErrorMsg] = useState("");
-
-  useEffect(() => {
-    if (!open) {
-      setMode("signin");
-      setBusy(false);
-      setEmail("");
-      setPassword("");
-      setFullName("");
-      setConfirm("");
-      setShowSigninPw(false);
-      setShowPw(false);
-      setShowConfirm(false);
-      setErrorMsg("");
-    }
-  }, [open]);
-
-  const safeClose = useCallback(() => onOpenChange(false), [onOpenChange]);
-
-  const handleLoginGoogle = async () => {
-    try {
-      setBusy(true);
-      setErrorMsg("");
-      const provider = new GoogleAuthProvider();
-      const cred = await signInWithPopup(auth, provider);
-      safeClose();
-      await routeAfterAuth(navigate, cred.user, entryRole, nextPage);
-    } catch (err) {
-      if (err?.code !== "auth/popup-closed-by-user") {
-        setErrorMsg(
-          err?.code ? `Firebase: ${err.code}` : err?.message || "Google sign-in failed"
-        );
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleLoginApple = async () => {
-    try {
-      setBusy(true);
-      setErrorMsg("");
-      const appleProvider = new OAuthProvider("apple.com");
-      const cred = await signInWithPopup(auth, appleProvider);
-      safeClose();
-      await routeAfterAuth(navigate, cred.user, entryRole, nextPage);
-    } catch (err) {
-      if (err?.code !== "auth/popup-closed-by-user") {
-        setErrorMsg(
-          err?.code ? `Firebase: ${err.code}` : err?.message || "Apple sign-in failed"
-        );
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSignInEmail = async () => {
-    const em = email.trim().toLowerCase();
-    if (!em) return setErrorMsg("Please enter your email.");
-    if (!password) return setErrorMsg("Please enter your password.");
-
-    try {
-      setBusy(true);
-      setErrorMsg("");
-      const cred = await signInWithEmailAndPassword(auth, em, password);
-      safeClose();
-      await routeAfterAuth(navigate, cred.user, entryRole, nextPage);
-    } catch (err) {
-      setErrorMsg(err?.code ? `Firebase: ${err.code}` : err?.message || "Sign-in failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSignUpEmail = async () => {
-    const em = email.trim().toLowerCase();
-    if (!fullName.trim()) return setErrorMsg("Please enter your full name.");
-    if (!em) return setErrorMsg("Please enter your email.");
-    if (!password) return setErrorMsg("Please create a password.");
-    if (password !== confirm) return setErrorMsg("Passwords do not match.");
-
-    try {
-      setBusy(true);
-      setErrorMsg("");
-
-      const methods = await fetchSignInMethodsForEmail(auth, em);
-      if (methods.length > 0) {
-        setMode("signin");
-        return setErrorMsg("This email is already registered. Please sign in instead.");
-      }
-
-      const cred = await createUserWithEmailAndPassword(auth, em, password);
-      await updateProfile(cred.user, { displayName: fullName.trim() });
-
-      safeClose();
-      await routeAfterAuth(navigate, cred.user, entryRole, nextPage);
-    } catch (err) {
-      setErrorMsg(err?.code ? `Firebase: ${err.code}` : err?.message || "Sign-up failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-auto">
-        <DialogHeader>
-          <DialogTitle>
-            {mode === "signin" ? "Sign in to continue" : "Create your account"}
-          </DialogTitle>
-          <DialogDescription>
-            Selected role:{" "}
-            <span className="font-medium">
-              {entryRole === "user" ? "Student / Parent" : entryRole}
-            </span>
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid grid-cols-2 rounded-xl bg-gray-100 p-1 text-sm">
-          <button
-            type="button"
-            className={`rounded-lg py-2 transition ${
-              mode === "signin" ? "bg-white font-semibold shadow" : "text-gray-600"
-            }`}
-            onClick={() => setMode("signin")}
-            disabled={busy}
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            className={`rounded-lg py-2 transition ${
-              mode === "signup" ? "bg-white font-semibold shadow" : "text-gray-600"
-            }`}
-            onClick={() => setMode("signup")}
-            disabled={busy}
-          >
-            Sign up
-          </button>
-        </div>
-
-        <div className="mt-4 space-y-3">
-          <Button
-            variant="outline"
-            className="h-12 w-full text-base"
-            onClick={handleLoginGoogle}
-            disabled={busy}
-          >
-            Continue with Google
-          </Button>
-          <Button
-            variant="outline"
-            className="h-12 w-full bg-black text-base text-white hover:bg-gray-800 hover:text-white"
-            onClick={handleLoginApple}
-            disabled={busy}
-          >
-            Apple Continue with Apple
-          </Button>
-        </div>
-
-        <div className="relative my-4">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-gray-300" />
-          </div>
-          <div className="relative flex justify-center text-sm">
-            <span className="bg-white px-2 text-gray-500">or continue with email</span>
-          </div>
-        </div>
-
-        {errorMsg && (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-600">
-            {errorMsg}
-          </div>
-        )}
-
-        {mode === "signin" ? (
-          <div className="space-y-4">
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type="email"
-                placeholder="Email address"
-                className="h-12 pl-10"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type={showSigninPw ? "text" : "password"}
-                placeholder="Password"
-                className="h-12 pl-10 pr-10"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <button
-                type="button"
-                aria-label={showSigninPw ? "Hide password" : "Show password"}
-                aria-pressed={showSigninPw}
-                onClick={() => setShowSigninPw((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
-              >
-                {showSigninPw ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-              </button>
-            </div>
-
-            <Button className="h-12 w-full text-base" onClick={handleSignInEmail} disabled={busy}>
-              {busy ? "Signing in..." : "Sign in"}
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="relative">
-              <UserIcon className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type="text"
-                placeholder="Full name"
-                className="h-12 pl-10"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
-            </div>
-
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type="email"
-                placeholder="Email address"
-                className="h-12 pl-10"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type={showPw ? "text" : "password"}
-                placeholder="Create a password"
-                className="h-12 pl-10 pr-10"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <button
-                type="button"
-                aria-label={showPw ? "Hide password" : "Show password"}
-                aria-pressed={showPw}
-                onClick={() => setShowPw((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
-              >
-                {showPw ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-              </button>
-            </div>
-
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-              <Input
-                type={showConfirm ? "text" : "password"}
-                placeholder="Confirm password"
-                className="h-12 pl-10 pr-10"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-              <button
-                type="button"
-                aria-label={showConfirm ? "Hide confirm password" : "Show confirm password"}
-                aria-pressed={showConfirm}
-                onClick={() => setShowConfirm((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-gray-500 hover:text-gray-700"
-              >
-                {showConfirm ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-              </button>
-            </div>
-
-            <Button className="h-12 w-full text-base" onClick={handleSignUpEmail} disabled={busy}>
-              {busy ? "Creating..." : "Create account"}
-            </Button>
-          </div>
-        )}
-
-        <div className="pt-2">
-          <Button variant="ghost" className="w-full" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 export default function SchoolDetails() {
@@ -519,17 +120,12 @@ export default function SchoolDetails() {
   const [authReady, setAuthReady] = useState(false);
   const [fbProfile, setFbProfile] = useState(null);
 
-  const [loginDialogOpen, setLoginDialogOpen] = useState(false);
-  const [chosenRole, setChosenRole] = useState("school");
-  const [loginNextPage, setLoginNextPage] = useState("SchoolDetails");
-
   const [programDialogOpen, setProgramDialogOpen] = useState(false);
   const [programSaving, setProgramSaving] = useState(false);
   const [editingProgram, setEditingProgram] = useState(null);
 
   const [interestedLoading, setInterestedLoading] = useState(false);
   const [alreadyInterested, setAlreadyInterested] = useState(false);
-  const [pendingInterest, setPendingInterest] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -549,10 +145,14 @@ export default function SchoolDetails() {
       }
 
       try {
-        const snap = await getDoc(doc(db, "users", fbUser.uid));
-        if (!cancelled) setFbProfile(snap.exists() ? snap.data() : null);
+        const userSnap = await getDoc(doc(db, "users", fbUser.uid));
+        if (!cancelled) {
+          setFbProfile(userSnap.exists() ? userSnap.data() : null);
+        }
       } catch {
-        if (!cancelled) setFbProfile(null);
+        if (!cancelled) {
+          setFbProfile(null);
+        }
       }
     })();
 
@@ -564,6 +164,7 @@ export default function SchoolDetails() {
   const resolveInstitutionId = useCallback(async () => {
     if (!authReady && !schoolIdParam) return null;
 
+    // Explicit school id in URL = view that school
     if (schoolIdParam) {
       try {
         const directInst = await safeGetDoc("institutions", schoolIdParam);
@@ -580,36 +181,23 @@ export default function SchoolDetails() {
         if (!instSnap.empty) return instSnap.docs[0].id;
       } catch {}
 
-      try {
-        const spQ = query(
-          collection(db, "school_profiles"),
-          where("user_id", "==", schoolIdParam),
-          limit(1)
-        );
-        const spSnap = await getDocs(spQ);
-
-        if (!spSnap.empty) {
-          const sp = spSnap.docs[0].data() || {};
-          const linkedInstitutionId =
-            sp.institution_id || sp.institutionId || sp.school_id || sp.schoolId || null;
-
-          if (linkedInstitutionId) return linkedInstitutionId;
-        }
-      } catch {}
-
       return null;
     }
 
+    // No explicit id = try owner self-view first
     if (!fbUser) return null;
 
-    const uid = fbUser.uid;
-
     try {
-      const instQ = query(collection(db, "institutions"), where("user_id", "==", uid), limit(1));
+      const instQ = query(
+        collection(db, "institutions"),
+        where("user_id", "==", fbUser.uid),
+        limit(1)
+      );
       const instSnap = await getDocs(instQ);
       if (!instSnap.empty) return instSnap.docs[0].id;
     } catch {}
 
+    // Optional claim flow means no linked institution is okay
     return null;
   }, [schoolIdParam, authReady, fbUser]);
 
@@ -621,15 +209,6 @@ export default function SchoolDetails() {
 
       try {
         if (!schoolIdParam && !authReady) return;
-
-        if (!schoolIdParam && authReady && !fbUser) {
-          if (!cancelled) {
-            setSchool(null);
-            setPrograms([]);
-            setLoading(false);
-          }
-          return;
-        }
 
         const institutionId = await resolveInstitutionId();
 
@@ -643,33 +222,9 @@ export default function SchoolDetails() {
         }
 
         const instSnap = await safeGetDoc("institutions", institutionId);
-        const instData = instSnap.exists() ? { id: instSnap.id, ...instSnap.data() } : null;
+        const instData = instSnap.exists() ? { id: institutionId, ...instSnap.data() } : null;
 
-        let spData = null;
-
-        try {
-          const schoolOwnerId =
-            pickFirst(
-              instData?.user_id,
-              schoolIdParam && schoolIdParam !== institutionId ? schoolIdParam : null
-            ) || null;
-
-          if (schoolOwnerId) {
-            const spQ = query(
-              collection(db, "school_profiles"),
-              where("user_id", "==", schoolOwnerId),
-              limit(1)
-            );
-            const spSnap = await getDocs(spQ);
-            if (!spSnap.empty) {
-              spData = { id: spSnap.docs[0].id, ...spSnap.docs[0].data() };
-            }
-          }
-        } catch {
-          spData = null;
-        }
-
-        if (!instData && !spData) {
+        if (!instData) {
           if (!cancelled) {
             setSchool(null);
             setPrograms([]);
@@ -680,54 +235,64 @@ export default function SchoolDetails() {
 
         const merged = {
           id: institutionId,
-          name: pickFirst(instData?.name, spData?.school_name, spData?.institution_name, "Institution"),
+          name: pickFirst(instData?.name, "Institution"),
           logo_url: pickFirst(instData?.logoUrl, instData?.logo_url),
           banner_url: pickFirst(instData?.bannerUrl, instData?.banner_url),
           image_url: pickFirst(instData?.imageUrl, instData?.image_url),
-          image_urls: ensureArray(instData?.imageUrls),
-          website: pickFirst(instData?.website, spData?.website),
-          location: pickFirst(instData?.city, spData?.location),
+          image_urls: ensureArray(
+            pickFirst(instData?.imageUrls, instData?.image_urls, [])
+          ),
+          website: pickFirst(instData?.website),
+          location: pickFirst(instData?.city, instData?.location),
           province: pickFirst(instData?.province),
           country: pickFirst(instData?.country),
-          about: pickFirst(instData?.about, instData?.description, spData?.about, spData?.bio),
+          about: pickFirst(instData?.about, instData?.description),
           description: pickFirst(instData?.description),
           address: pickFirst(instData?.address),
           phone: pickFirst(instData?.phone),
           email: pickFirst(instData?.email),
-          dliNumber: pickFirst(instData?.dliNumber),
-          year_established: pickFirst(instData?.year_established),
+          dliNumber: pickFirst(instData?.dliNumber, instData?.dli_number),
+          year_established: pickFirst(instData?.year_established, instData?.founded_year),
           application_fee: pickFirst(instData?.application_fee),
-          avgTuition_field: pickFirst(instData?.avgTuition),
+          avgTuition_field: pickFirst(instData?.avgTuition, instData?.tuition_fees),
           cost_of_living: pickFirst(instData?.cost_of_living),
-          public_private: pickFirst(instData?.public_private),
-          verification_status: pickFirst(spData?.verification_status, instData?.verification_status),
+          public_private: pickFirst(instData?.public_private, instData?.is_public),
+          verification_status: pickFirst(instData?.verification_status),
+          claim_status: pickFirst(instData?.claim_status),
           account_type: pickFirst(instData?.account_type, "real"),
           status: instData?.status,
-          type: pickFirst(instData?.type, spData?.type),
-          user_id: pickFirst(instData?.user_id, spData?.user_id),
+          type: pickFirst(instData?.type, instData?.school_type),
+          school_level: pickFirst(instData?.school_level),
+          user_id: pickFirst(instData?.user_id),
+          rating: pickFirst(instData?.rating),
+          acceptance_rate: pickFirst(instData?.acceptance_rate),
           raw: {
             institution: instData,
-            school_profile: spData,
           },
         };
 
         if (!cancelled) setSchool(merged);
 
         const programsFound = [];
-        const programOwnerId = pickFirst(instData?.user_id, spData?.user_id, schoolIdParam);
 
         try {
-          if (programOwnerId) {
-            const q1 = query(collection(db, "schools"), where("user_id", "==", programOwnerId), limit(500));
-            const snap1 = await getDocs(q1);
-            snap1.forEach((d) => programsFound.push({ id: d.id, ...d.data() }));
-          }
+          const q1 = query(
+            collection(db, "schools"),
+            where("institution_id", "==", institutionId),
+            limit(500)
+          );
+          const snap1 = await getDocs(q1);
+          snap1.forEach((d) => programsFound.push({ id: d.id, ...d.data() }));
         } catch (e) {
-          console.warn("Programs query (schools by user_id) failed:", e);
+          console.warn("Programs query (schools by institution_id) failed:", e);
         }
 
         try {
-          const q2 = query(collection(db, "schools"), where("institution_id", "==", institutionId), limit(500));
+          const q2 = query(
+            collection(db, "schools"),
+            where("institutionId", "==", institutionId),
+            limit(500)
+          );
           const snap2 = await getDocs(q2);
           snap2.forEach((d) => {
             if (!programsFound.find((p) => p.id === d.id)) {
@@ -737,13 +302,19 @@ export default function SchoolDetails() {
         } catch {}
 
         try {
-          const q3 = query(collection(db, "schools"), where("institutionId", "==", institutionId), limit(500));
-          const snap3 = await getDocs(q3);
-          snap3.forEach((d) => {
-            if (!programsFound.find((p) => p.id === d.id)) {
-              programsFound.push({ id: d.id, ...d.data() });
-            }
-          });
+          if (instData?.user_id) {
+            const q3 = query(
+              collection(db, "schools"),
+              where("user_id", "==", instData.user_id),
+              limit(500)
+            );
+            const snap3 = await getDocs(q3);
+            snap3.forEach((d) => {
+              if (!programsFound.find((p) => p.id === d.id)) {
+                programsFound.push({ id: d.id, ...d.data() });
+              }
+            });
+          }
         } catch {}
 
         if (!cancelled) {
@@ -770,11 +341,7 @@ export default function SchoolDetails() {
   const isSignedIn = !!fbUser;
 
   const ownerIds = useMemo(() => {
-    return [
-      school?.user_id,
-      school?.raw?.institution?.user_id,
-      school?.raw?.school_profile?.user_id,
-    ]
+    return [school?.user_id, school?.raw?.institution?.user_id]
       .filter(Boolean)
       .map((v) => String(v));
   }, [school]);
@@ -782,11 +349,6 @@ export default function SchoolDetails() {
   const canManageSchool = useMemo(() => {
     return !!fbUser && role === "school" && ownerIds.includes(String(fbUser.uid));
   }, [fbUser, role, ownerIds]);
-
-  const currentPageHref = useMemo(
-    () => `${window.location.pathname}${window.location.search}`,
-    []
-  );
 
   const avgTuition = useMemo(() => {
     const vals = programs
@@ -808,8 +370,6 @@ export default function SchoolDetails() {
   const endIndex = startIndex + programsPerPage;
   const currentPrograms = programs.slice(startIndex, endIndex);
   const totalPages = Math.max(1, Math.ceil(totalPrograms / programsPerPage));
-
-  const defaultNextPage = useMemo(() => "SchoolDetails", []);
 
   const openAddProgram = () => {
     if (!canManageSchool) return;
@@ -879,15 +439,13 @@ export default function SchoolDetails() {
       const programsFound = [];
 
       try {
-        const q1 = query(collection(db, "schools"), where("user_id", "==", fbUser.uid), limit(500));
+        const q1 = query(collection(db, "schools"), where("institution_id", "==", school.id), limit(500));
         const snap1 = await getDocs(q1);
         snap1.forEach((d) => programsFound.push({ id: d.id, ...d.data() }));
-      } catch (e) {
-        console.warn("Refresh programs by user_id failed:", e);
-      }
+      } catch {}
 
       try {
-        const q2 = query(collection(db, "schools"), where("institution_id", "==", school.id), limit(500));
+        const q2 = query(collection(db, "schools"), where("institutionId", "==", school.id), limit(500));
         const snap2 = await getDocs(q2);
         snap2.forEach((d) => {
           if (!programsFound.find((p) => p.id === d.id)) {
@@ -897,7 +455,7 @@ export default function SchoolDetails() {
       } catch {}
 
       try {
-        const q3 = query(collection(db, "schools"), where("institutionId", "==", school.id), limit(500));
+        const q3 = query(collection(db, "schools"), where("user_id", "==", fbUser.uid), limit(500));
         const snap3 = await getDocs(q3);
         snap3.forEach((d) => {
           if (!programsFound.find((p) => p.id === d.id)) {
@@ -1008,28 +566,15 @@ export default function SchoolDetails() {
       alert("Failed to save interest. Please try again.");
     } finally {
       setInterestedLoading(false);
-      setPendingInterest(false);
     }
   }, [school, fbUser, fbProfile, canManageSchool]);
-
-  useEffect(() => {
-    if (!pendingInterest) return;
-    if (!authReady) return;
-    if (!fbUser?.uid) return;
-    if (!school?.id) return;
-
-    submitInterest();
-  }, [pendingInterest, authReady, fbUser?.uid, school?.id, submitInterest]);
 
   const handleInterestedClick = async () => {
     if (!school?.id) return;
     if (canManageSchool) return;
 
     if (!isSignedIn) {
-      setChosenRole("user");
-      setLoginNextPage(currentPageHref);
-      setPendingInterest(true);
-      setLoginDialogOpen(true);
+      navigate(createPageUrl("Welcome"));
       return;
     }
 
@@ -1054,46 +599,22 @@ export default function SchoolDetails() {
     );
   }
 
-  if (authReady && !fbUser && !schoolIdParam) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6">
-        <Card className="w-full max-w-md">
-          <CardContent className="space-y-3 p-6 text-center">
-            <Lock className="mx-auto h-10 w-10 text-gray-500" />
-            <div className="text-lg font-semibold">Sign in required</div>
-            <div className="text-sm text-gray-600">
-              School Details is only available to your own school account.
-            </div>
-            <Button
-              onClick={() => {
-                setChosenRole("school");
-                setLoginNextPage(defaultNextPage);
-                setLoginDialogOpen(true);
-              }}
-              className="w-full"
-            >
-              Sign in
-            </Button>
-          </CardContent>
-        </Card>
-
-        <LoginDialog
-          open={loginDialogOpen}
-          onOpenChange={setLoginDialogOpen}
-          entryRole={chosenRole}
-          nextPage={loginNextPage}
-        />
-      </div>
-    );
-  }
-
   if (!school) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
+        <div className="text-center max-w-lg px-6">
           <Building className="mx-auto mb-4 h-16 w-16 text-gray-400" />
           <h2 className="mb-2 text-xl font-semibold text-gray-900">School Not Found</h2>
-          <p className="text-gray-600">We couldn't load your school profile.</p>
+          <p className="text-gray-600">
+            We couldn't load this school profile. If you are a school user without a claimed institution yet, that is okay — claiming is optional.
+          </p>
+          {role === "school" && (
+            <div className="mt-5">
+              <Button onClick={() => navigate(createPageUrl("SchoolDashboard"))}>
+                Go to School Dashboard
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1151,7 +672,7 @@ export default function SchoolDetails() {
                             : "bg-yellow-100 text-yellow-800"
                         }
                       >
-                        {school.verification_status === "verified" ? " Verified" : "Pending"}
+                        {school.verification_status === "verified" ? "Verified" : "Pending"}
                       </Badge>
                     )}
 
@@ -1164,6 +685,12 @@ export default function SchoolDetails() {
                         }
                       >
                         {school.account_type === "real" ? "Real" : "Demo"}
+                      </Badge>
+                    )}
+
+                    {school.claim_status && (
+                      <Badge className="bg-indigo-100 text-indigo-800">
+                        {school.claim_status}
                       </Badge>
                     )}
                   </div>
@@ -1469,13 +996,6 @@ export default function SchoolDetails() {
             </div>
           </CardContent>
         </Card>
-
-        <LoginDialog
-          open={loginDialogOpen}
-          onOpenChange={setLoginDialogOpen}
-          entryRole={chosenRole}
-          nextPage={loginNextPage}
-        />
       </div>
     </div>
   );

@@ -89,15 +89,11 @@ service cloud.firestore {
     function ownsSchoolId(sid) {
       return signedIn() && (
         (exists(/databases/$(database)/documents/School/$(sid)) &&
-         get(/databases/$(database)/documents/School/$(sid)).data.user_id == request.auth.uid) ||
+        get(/databases/$(database)/documents/School/$(sid)).data.user_id == request.auth.uid) ||
         (exists(/databases/$(database)/documents/schools/$(sid)) &&
-         get(/databases/$(database)/documents/schools/$(sid)).data.user_id == request.auth.uid) ||
-        (exists(/databases/$(database)/documents/school_profiles/$(sid)) &&
-          (
-            sid == request.auth.uid ||
-            get(/databases/$(database)/documents/school_profiles/$(sid)).data.user_id == request.auth.uid
-          )
-        )
+        get(/databases/$(database)/documents/schools/$(sid)).data.user_id == request.auth.uid) ||
+        (exists(/databases/$(database)/documents/institutions/$(sid)) &&
+        get(/databases/$(database)/documents/institutions/$(sid)).data.user_id == request.auth.uid)
       );
     }
 
@@ -1129,10 +1125,93 @@ service cloud.firestore {
       allow update, delete: if signedIn() && resource.data.user_id == request.auth.uid;
     }
 
+        function requestUserIsSchool() {
+      return signedIn() && userHasType("school");
+    }
+
+    function resourceInstitutionOwnerUid() {
+      return resource.data.user_id is string ? resource.data.user_id : "";
+    }
+
+    function requestInstitutionOwnerUid() {
+      return request.resource.data.user_id is string ? request.resource.data.user_id : "";
+    }
+
+    function institutionWasUnclaimed() {
+      return resourceInstitutionOwnerUid() == "";
+    }
+
+    function institutionWillBeClaimedByRequester() {
+      return requestInstitutionOwnerUid() == request.auth.uid;
+    }
+
+    function institutionOwnerUnchanged() {
+      return requestInstitutionOwnerUid() == resourceInstitutionOwnerUid();
+    }
+
+    function onlyClaimFieldsChanged() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "user_id",
+        "claim_status",
+        "claimed_at",
+        "claimed_by_email",
+        "updated_at"
+      ]);
+    }
+
+    function validSchoolInstitutionClaim() {
+      return false;
+    }
+
+    function validInstitutionClaimRequestCreate() {
+      return signedIn() &&
+        requestUserIsSchool() &&
+        request.resource.data.institution_id is string &&
+        request.resource.data.institution_name is string &&
+        request.resource.data.requested_by_uid is string &&
+        request.resource.data.requested_by_uid == request.auth.uid &&
+        request.resource.data.requested_role is string &&
+        request.resource.data.requested_role == "school" &&
+        request.resource.data.status is string &&
+        request.resource.data.status == "pending" &&
+        (!request.resource.data.keys().hasAny(["reviewed_by"]) || request.resource.data.reviewed_by == null) &&
+        (!request.resource.data.keys().hasAny(["reviewed_at"]) || request.resource.data.reviewed_at == null);
+    }
+
+    match /institution_claim_requests/{docId} {
+      allow create: if validInstitutionClaimRequestCreate();
+
+      allow read: if signedIn() && (
+        isAdmin() ||
+        (resource.data.requested_by_uid is string && resource.data.requested_by_uid == request.auth.uid)
+      );
+
+      allow update, delete: if isAdmin();
+    }
+
     match /institutions/{docId} {
       allow read: if true;
-      allow create: if signedIn() && (isAdmin() || request.resource.data.user_id == request.auth.uid);
-      allow update, delete: if signedIn() && (isAdmin() || resource.data.user_id == request.auth.uid);
+
+      // Keep create restricted so schools do NOT create fresh institution docs
+      // through profile editing. Admin only for admin-reviewed claim flow.
+      allow create: if isAdmin();
+
+      // Updates allowed for:
+      // 1) admin
+      // 2) current owner editing their own institution without changing ownership
+      // Schools may NOT self-claim directly. Claim approval must be done by admin.
+      allow update: if signedIn() && (
+        isAdmin() ||
+        (
+          resourceInstitutionOwnerUid() == request.auth.uid &&
+          institutionOwnerUnchanged()
+        )
+      );
+
+      allow delete: if signedIn() && (
+        isAdmin() ||
+        resourceInstitutionOwnerUid() == request.auth.uid
+      );
     }
     match /Institutions/{docId} { allow read: if true; allow write: if isAdmin(); }
     match /Schools/{docId}      { allow read: if true; allow write: if isAdmin(); }
