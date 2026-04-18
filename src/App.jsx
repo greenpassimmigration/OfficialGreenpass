@@ -33,6 +33,7 @@ import AdminBrandSettings from "@/pages/AdminBrandSettings";
 import AdminChatSettings from "@/pages/AdminChatSettings";
 import AdminBankSettings from "@/pages/AdminBankSettings";
 import AdminReports from "@/pages/AdminReports";
+import InternalInvoices from "@/pages/InternalInvoices";
 import AdminClaimRequests from "@/pages/AdminClaimRequests";
 import AgentAgreement from "@/pages/AgentAgreement";
 import Checkout from "@/pages/Checkout";
@@ -510,6 +511,14 @@ export default function App() {
           element={
             <RequireRole currentUser={currentUser} loading={loading} allow={["admin"]}>
               <AdminReports />
+            </RequireRole>
+          }
+        />
+        <Route
+          path="internalinvoices"
+          element={
+            <RequireRole currentUser={currentUser} loading={loading} allow={["admin"]}>
+              <InternalInvoices />
             </RequireRole>
           }
         />

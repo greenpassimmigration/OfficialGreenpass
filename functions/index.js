@@ -1,11 +1,9 @@
 const admin = require("firebase-admin");
 const cors = require("cors")({ origin: true });
 const crypto = require("crypto");
-const OpenAI = require("openai");
 
 const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { defineSecret } = require("firebase-functions/params");
 const {
   onDocumentCreated,
   onDocumentUpdated,
@@ -13,75 +11,6 @@ const {
 } = require("firebase-functions/v2/firestore");
 
 admin.initializeApp();
-
-const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
-
-function hashKey(text, targetLang) {
-  return crypto.createHash("sha256").update(`${targetLang}||${text}`).digest("hex");
-}
-
-/**
- * ============================
- * 1) Translation API (existing)
- * ============================
- */
-exports.api = onRequest(
-  { secrets: [OPENAI_API_KEY] },
-  async (req, res) => {
-    cors(req, res, async () => {
-      try {
-        const { text, targetLang } = req.body || {};
-
-        if (!text || !targetLang) {
-          return res.status(400).json({ error: "Missing text or targetLang" });
-        }
-
-        if (typeof text !== "string" || text.length > 4000) {
-          return res.status(400).json({ error: "Text too long (max 4000 chars)" });
-        }
-
-        const key = hashKey(text, targetLang);
-        const docRef = admin.firestore().collection("translations_public").doc(key);
-        const cached = await docRef.get();
-
-        if (cached.exists) {
-          return res.json({ translatedText: cached.data().translatedText, cached: true });
-        }
-
-        const openai = new OpenAI({ apiKey: OPENAI_API_KEY.value() });
-
-        const prompt = `Translate the following text to ${targetLang}. Keep URLs, emails, and names unchanged. Return only the translation.\n\n${text}`;
-
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4.1-mini",
-          messages: [
-            {
-              role: "system",
-              content: "You are a professional translator. Output ONLY the translated text.",
-            },
-            { role: "user", content: prompt },
-          ],
-          temperature: 0,
-        });
-
-        const translatedText = completion.choices?.[0]?.message?.content?.trim() || "";
-
-        await docRef.set({
-          key,
-          targetLang,
-          sourceText: text,
-          translatedText,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        return res.json({ translatedText, cached: false });
-      } catch (err) {
-        console.error(err);
-        return res.status(500).json({ error: err.message || "Translate failed" });
-      }
-    });
-  }
-);
 
 /**
  * =========================================================

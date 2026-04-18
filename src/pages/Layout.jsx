@@ -203,6 +203,7 @@ const FALLBACK_TEXT = {
   refundPolicy: "Refund and Payment Review Policy",
   immigrationDisclaimer: "Immigration and Outcome Disclaimer",
   adminClaimRequests: "Claim Requests",
+  internalInvoices: "Internal Invoices",
 };
 
 const fb = (key) => FALLBACK_TEXT[key] || key;
@@ -1061,6 +1062,7 @@ const AdminAuthedTopNavWithLeftPanelLayout = ({
         { label: tr("brandSettings", "Brand Settings"), url: createPageUrl("AdminBrandSettings"), icon: Palette, chevron: true },
         { label: tr("subscriptionMode", "Subscription Mode"), url: createPageUrl("Subscriptions"), icon: Banknote, chevron: true },
         { label: tr("bankSettings", "Bank Settings"), url: createPageUrl("AdminBankSettings"), icon: Building, chevron: true },
+        { label: tr("internalInvoices", "Internal Invoices"), url: createPageUrl("InternalInvoices"), icon: Receipt, chevron: true },
         { label: tr("chatSettings", "Chat Settings"), url: createPageUrl("AdminChatSettings"), icon: MessageSquare, chevron: true },
         { label: tr("adminClaimRequests", "Claim Requests"), url: createPageUrl("AdminClaimRequests"), icon: FileCheck, chevron: true },
         { label: tr("connections", "Connections"), url: createPageUrl("Connections"), icon: UsersIcon, chevron: true },
@@ -1087,6 +1089,7 @@ const AdminAuthedTopNavWithLeftPanelLayout = ({
         { title: tr("brandSettings", "Brand Settings"), url: createPageUrl("AdminBrandSettings"), icon: Palette },
         { title: tr("chatSettings", "Chat Settings"), url: createPageUrl("AdminChatSettings"), icon: MessageSquare },
         { title: tr("bankSettings", "Bank Settings"), url: createPageUrl("AdminBankSettings"), icon: Building },
+        { title: tr("internalInvoices", "Internal Invoices"), url: createPageUrl("InternalInvoices"), icon: Receipt },
         { title: tr("connections", "Connections"), url: createPageUrl("Connections"), icon: UsersIcon },
       ]),
     [tr]
@@ -1319,6 +1322,7 @@ function buildDesktopNav(currentUser, tr) {
       { title: tr("brandSettings", "Brand Settings"), url: createPageUrl("AdminBrandSettings"), icon: Palette },
       { title: tr("chatSettings", "Chat Settings"), url: createPageUrl("AdminChatSettings"), icon: MessageSquare },
       { title: tr("bankSettings", "Bank Settings"), url: createPageUrl("AdminBankSettings"), icon: Building },
+      { title: tr("internalInvoices", "Internal Invoices"), url: createPageUrl("InternalInvoices"), icon: Receipt },
       { title: tr("connections", "Connections"), url: createPageUrl("Connections"), icon: UsersIcon },
     ]);
   }
@@ -1439,6 +1443,7 @@ function buildMobileNav(currentUser, hasReservation, latestReservationId, trFn) 
         { title: tr("brandSettings", "Brand Settings"), url: createPageUrl("AdminBrandSettings"), icon: Palette },
         { title: tr("chatSettings", "Chat Settings"), url: createPageUrl("AdminChatSettings"), icon: MessageSquare },
         { title: tr("bankSettings", "Bank Settings"), url: createPageUrl("AdminBankSettings"), icon: Building },
+        { title: tr("internalInvoices", "Internal Invoices"), url: createPageUrl("InternalInvoices"), icon: Receipt },
         { title: tr("profile", "Profile"), url: createPageUrl("Profile"), icon: UserCog },
       ]),
     };

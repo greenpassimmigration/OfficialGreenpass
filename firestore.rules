@@ -1369,10 +1369,14 @@ service cloud.firestore {
 
     match /bank_accounts/{docId} {
       allow create: if signedIn();
-      allow read: if signedIn();
-      allow update, delete: if signedIn() && resource.data.user_id == request.auth.uid;
+      allow read: if isAdmin() || (signedIn() && resource.data.user_id == request.auth.uid);
+      allow update, delete: if isAdmin() || (signedIn() && resource.data.user_id == request.auth.uid);
     }
     match /bank_settings/{docId} { allow read, create, update, delete: if isAdmin(); }
+
+    match /admin_invoices/{invoiceId} {
+      allow create, read, update, delete: if isAdmin();
+    }
 
     match /payment_settings/{docId} { allow read: if true; allow create, update, delete: if isAdmin(); }
     match /paymentSettings/{docId}  { allow read: if true; allow create, update, delete: if isAdmin(); }
