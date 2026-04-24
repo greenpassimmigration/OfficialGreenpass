@@ -1231,7 +1231,60 @@ function ClaimSchoolPanel({
 
 export default function SchoolDashboard({ user }) {
   const { tr } = useTr("school_dashboard");
-  const userId = user?.id || user?.uid || user?.user_id || auth.currentUser?.uid || null;
+
+  // ✅ IMPORTANT FIX:
+  // Prioritize Firebase Auth UID first, because Firestore users/{uid}
+  // should use the Firebase Auth UID as the document ID.
+  const initialUserId =
+    user?.uid ||
+    user?.user_id ||
+    user?.id ||
+    auth.currentUser?.uid ||
+    null;
+
+  const [liveUser, setLiveUser] = useState(user);
+
+  const userId =
+    liveUser?.uid ||
+    liveUser?.user_id ||
+    liveUser?.id ||
+    initialUserId;
+
+  useEffect(() => {
+    const uid = initialUserId;
+
+    if (!uid) {
+      setLiveUser(user);
+      return;
+    }
+
+    const unsub = onSnapshot(
+      doc(db, "users", uid),
+      (snap) => {
+        if (!snap.exists()) {
+          setLiveUser(user);
+          return;
+        }
+
+        const data = snap.data() || {};
+
+        setLiveUser({
+          id: snap.id,
+          uid: snap.id,
+          user_id: snap.id,
+          ...data,
+        });
+      },
+      (err) => {
+        console.error("SchoolDashboard user subscription listener error:", err);
+        setLiveUser(user);
+      }
+    );
+
+    return () => unsub();
+  }, [initialUserId, user]);
+
+  const effectiveUser = liveUser || user;
 
   const [stats, setStats] = useState({
     totalPrograms: 0,
@@ -1242,20 +1295,20 @@ export default function SchoolDashboard({ user }) {
     () => institutionDisplayName(
       school,
       school
-        ? user
+        ? effectiveUser
         : {
-            ...user,
+            ...effectiveUser,
             full_name:
-              user?.school_name ||
-              user?.institution_name ||
-              user?.organization_name ||
-              user?.full_name ||
-              user?.displayName ||
-              user?.name ||
+              effectiveUser?.school_name ||
+              effectiveUser?.institution_name ||
+              effectiveUser?.organization_name ||
+              effectiveUser?.full_name ||
+              effectiveUser?.displayName ||
+              effectiveUser?.name ||
               "School",
           }
     ),
-    [school, user]
+    [school, effectiveUser]
   );
   const schoolLogoUrl = useMemo(() => institutionLogo(school), [school]);
 
@@ -1279,7 +1332,7 @@ export default function SchoolDashboard({ user }) {
 
   const [authorCountryByUid, setAuthorCountryByUid] = useState({});
 
-  const isSubscribed = useMemo(() => isSubscribedUser(user), [user]);
+  const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
   const { subscriptionModeEnabled } = useSubscriptionMode();
 
   const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
@@ -1644,14 +1697,14 @@ export default function SchoolDashboard({ user }) {
     try {
       const authorName =
         school?.id
-          ? institutionDisplayName(school, user)
+          ? institutionDisplayName(school, effectiveUser)
           : (
-              user?.school_name ||
-              user?.institution_name ||
-              user?.organization_name ||
-              user?.full_name ||
-              user?.displayName ||
-              user?.name ||
+              effectiveUser?.school_name ||
+              effectiveUser?.institution_name ||
+              effectiveUser?.organization_name ||
+              effectiveUser?.full_name ||
+              effectiveUser?.displayName ||
+              effectiveUser?.name ||
               "School"
             );
 
@@ -1757,7 +1810,7 @@ export default function SchoolDashboard({ user }) {
       <CreateEventDialog
         open={createEventOpen}
         onOpenChange={setCreateEventOpen}
-        user={user}
+        user={effectiveUser}
         role="school"
         allowedPlatforms={["eventbrite"]}
         disabledReason={!canCreateEvent ? tr("subscription_required", "Subscription required to create events") : null}
@@ -1834,7 +1887,7 @@ export default function SchoolDashboard({ user }) {
 
           {subscriptionModeEnabled && !isSubscribed && (
             <div className="mb-4">
-              <SubscribeBanner to={subscribeUrl} user={user} />
+              <SubscribeBanner to={subscribeUrl} user={effectiveUser} />
             </div>
           )}
 
@@ -1849,7 +1902,7 @@ export default function SchoolDashboard({ user }) {
               <ClaimSchoolPanel
                 tr={tr}
                 userId={userId}
-                user={user}
+                user={effectiveUser}
                 currentRequest={latestClaimRequest}
                 onRequestSubmitted={handleRequestSubmitted}
               />
@@ -2117,7 +2170,7 @@ export default function SchoolDashboard({ user }) {
                       key={p.id}
                       post={p}
                       currentUserId={userId}
-                      me={user}
+                      me={effectiveUser}
                       subscriptionModeEnabled={subscriptionModeEnabled}
                       authorCountryByUid={authorCountryByUid}
                     />
@@ -2212,7 +2265,7 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
   const payerName = me?.full_name || me?.name || "GreenPass User";
   const payerEmail = me?.email || "";
 
-  const handleSuccess = async (_method, transactionId, payload) => {
+  const handleSuccess = async (provider, transactionId, payload) => {
     if (!postId) return;
     setProcessing(true);
     setErr("");
@@ -2224,7 +2277,7 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
         boost_price_usd: plan.price,
         boost_currency: "USD",
         boost_transaction_id: String(transactionId || ""),
-        boost_provider: "paypal",
+        boost_provider: String(provider || "paypal"),
         boost_details: payload || null,
         boosted_at: serverTimestamp(),
         boosted_until: until,

@@ -69,12 +69,12 @@ import ImmigrationDisclaimer from "@/pages/ImmigrationDisclaimer";
 import MessagingPolicy from "@/pages/MessagingPolicy";
 import StudentScanRouter from "./pages/StudentScanRouter";
 
-/* ---------- Firebase auth/profile (lightweight for route-guards) ---------- */
+/* ---------- Firebase auth/profile route guards ---------- */
 import { auth, db } from "@/firebase";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 
-// --- Safe import of createPageUrl (with fallback if not exported) ---
+// --- Safe import of createPageUrl with fallback ---
 import * as Utils from "@/utils";
 const createPageUrl =
   (Utils && Utils.createPageUrl) ||
@@ -90,10 +90,17 @@ const createPageUrl =
    Auth + Role Guards
 ========================= */
 
-function normalizeRole(u) {
-  const raw = String(u?.user_type || u?.role || "student").toLowerCase().trim();
+function normalizeRole(input) {
+  const u = typeof input === "string" ? { role: input } : input || {};
+
+  // ✅ role is now the only source of truth.
+  const raw = String(u?.role || "student").toLowerCase().trim();
+
   if (raw === "user") return "student";
-  return raw;
+  if (raw === "institution") return "school";
+  if (raw === "provider") return "vendor";
+
+  return raw || "student";
 }
 
 function useCurrentUser() {
@@ -111,13 +118,37 @@ function useCurrentUser() {
       try {
         const ref = doc(db, "users", fbUser.uid);
         const snap = await getDoc(ref);
+
         if (snap.exists()) {
-          setCurrentUser({ uid: fbUser.uid, ...snap.data() });
+          const data = snap.data() || {};
+          const role = normalizeRole(data);
+
+          setCurrentUser({
+            uid: fbUser.uid,
+            id: fbUser.uid,
+            user_id: fbUser.uid,
+            ...data,
+
+            // ✅ normalized runtime role
+            role,
+          });
         } else {
-          setCurrentUser({ uid: fbUser.uid, user_type: "student" });
+          setCurrentUser({
+            uid: fbUser.uid,
+            id: fbUser.uid,
+            user_id: fbUser.uid,
+            role: "student",
+          });
         }
-      } catch {
-        setCurrentUser({ uid: fbUser.uid, user_type: "student" });
+      } catch (err) {
+        console.error("App useCurrentUser profile load error:", err);
+
+        setCurrentUser({
+          uid: fbUser.uid,
+          id: fbUser.uid,
+          user_id: fbUser.uid,
+          role: "student",
+        });
       } finally {
         setLoading(false);
       }
@@ -131,18 +162,27 @@ function useCurrentUser() {
 
 function RequireAuth({ currentUser, loading, children }) {
   const location = useLocation();
+
   if (loading) return null;
-  if (!currentUser) return <Navigate to="/login" replace state={{ from: location }} />;
+
+  if (!currentUser) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
   return children;
 }
 
 function RequireRole({ currentUser, loading, allow, children }) {
   if (loading) return null;
-  if (!currentUser) return <Navigate to="/login" replace />;
+
+  if (!currentUser) {
+    return <Navigate to="/login" replace />;
+  }
 
   const role = normalizeRole(currentUser);
+
   const allowed = (Array.isArray(allow) ? allow : [allow]).map((r) =>
-    normalizeRole({ user_type: r })
+    normalizeRole(r)
   );
 
   if (!allowed.includes(role)) {
@@ -195,7 +235,7 @@ export default function App() {
         <Route path="eventdetails" element={<EventDetailsPage />} />
         <Route path="tutors" element={<Tutors />} />
 
-        {/* Authenticated (all roles) */}
+        {/* Authenticated: all roles */}
         <Route
           path="dashboard"
           element={
@@ -204,6 +244,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="connections"
           element={
@@ -212,6 +253,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="connect"
           element={
@@ -220,6 +262,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="view-profile/:uid"
           element={
@@ -228,6 +271,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="messages"
           element={
@@ -236,6 +280,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="onboarding"
           element={
@@ -244,6 +289,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="profile"
           element={
@@ -252,6 +298,7 @@ export default function App() {
             </RequireAuth>
           }
         />
+
         <Route
           path="referrals"
           element={
@@ -260,6 +307,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="checkout"
           element={
@@ -269,7 +317,7 @@ export default function App() {
           }
         />
 
-        {/* Authenticated users can view school details */}
+        {/* Authenticated users can view school/program details */}
         <Route
           path="schooldetails"
           element={
@@ -279,7 +327,6 @@ export default function App() {
           }
         />
 
-        {/* Authenticated users can view program details */}
         <Route
           path="programdetails"
           element={
@@ -289,7 +336,7 @@ export default function App() {
           }
         />
 
-        {/* Organization (School/Agent/Tutor) */}
+        {/* Organization: School/Agent/Tutor */}
         <Route
           path="organization"
           element={
@@ -312,6 +359,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="reservationstatus"
           element={
@@ -330,6 +378,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="mystudents"
           element={
@@ -348,6 +397,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="tutorsessions"
           element={
@@ -356,6 +406,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="tutoravailability"
           element={
@@ -364,6 +415,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="planner"
           element={
@@ -382,6 +434,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="schoolleads"
           element={
@@ -410,6 +463,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminschools"
           element={
@@ -418,6 +472,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="admininstitutions"
           element={
@@ -426,6 +481,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminagentassignments"
           element={
@@ -434,6 +490,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminclaimrequests"
           element={
@@ -442,6 +499,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="verification"
           element={
@@ -450,6 +508,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminpaymentverification"
           element={
@@ -458,6 +517,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminpayments"
           element={
@@ -466,6 +526,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminwalletmanagement"
           element={
@@ -474,6 +535,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminevents"
           element={
@@ -482,6 +544,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminbrandsettings"
           element={
@@ -490,6 +553,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminchatsettings"
           element={
@@ -498,6 +562,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminbanksettings"
           element={
@@ -506,6 +571,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="adminreports"
           element={
@@ -514,6 +580,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="internalinvoices"
           element={
@@ -522,6 +589,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="subscriptions"
           element={
@@ -530,6 +598,7 @@ export default function App() {
             </RequireRole>
           }
         />
+
         <Route
           path="userdetails"
           element={

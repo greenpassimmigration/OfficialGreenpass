@@ -17,13 +17,19 @@ import { auth, db } from "@/firebase";
 
 function normalizeRole(value) {
   const role = String(value || "").trim().toLowerCase();
-  if (role === "user") return "student";
-  if (["student", "agent", "tutor", "school", "institution", "provider", "vendor"].includes(role)) {
-    if (role === "institution") return "school";
-    if (role === "provider") return "vendor";
+
+  // GreenPass role standard:
+  // role = active/current role source of truth.
+  // user = student/general user in the app.
+  if (role === "student") return "user";
+  if (role === "institution") return "school";
+  if (role === "provider") return "vendor";
+
+  if (["user", "agent", "tutor", "school", "vendor", "collaborator"].includes(role)) {
     return role;
   }
-  return "student";
+
+  return "user";
 }
 
 async function resolveCollaboratorRef(refCode) {
@@ -297,10 +303,8 @@ export default function AuthBridge() {
               email: fbUser.email || "",
               emailLower: (fbUser.email || "").toLowerCase(),
               full_name: fbUser.displayName || "",
-              selected_role: normalizedRole,
-              user_type: normalizedRole,
-              userType: normalizedRole,
               role: normalizedRole,
+              signup_entry_role: normalizedRole,
               onboarding_completed: false,
               onboarding_step: "basic_info",
               ...buildCollaboratorReferralFields(storedRef, referredByCollaboratorUid),
@@ -331,6 +335,23 @@ export default function AuthBridge() {
         } else {
           const u = snap.data() || {};
           const completed = u.onboarding_completed === true;
+
+          const normalizedRole = normalizeRole(effectiveRole || u.role || "");
+
+          // Keep existing users clean in the role-only model.
+          // We only write role + signup_entry_role. Old aliases like user_type,
+          // userType, and selected_role are no longer written by this bridge.
+          if (normalizedRole && u.role !== normalizedRole) {
+            await setDoc(
+              userRef,
+              {
+                role: normalizedRole,
+                signup_entry_role: u.signup_entry_role || normalizedRole,
+                updated_at: serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
 
           if (storedRef && !u.referred_by_collaborator_code) {
             await setDoc(

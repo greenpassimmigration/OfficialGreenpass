@@ -1,7 +1,7 @@
 const admin = require("firebase-admin");
 const cors = require("cors")({ origin: true });
 const crypto = require("crypto");
-
+const Stripe = require("stripe");
 const { onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const {
@@ -1388,6 +1388,328 @@ exports.resolveStudentReferralToken = onRequest(async (req, res) => {
     } catch (e) {
       console.error("resolveStudentReferralToken error:", e);
       return res.status(500).json({ error: e?.message || "Failed to resolve student token" });
+    }
+  });
+});
+
+function readJsonBody(req) {
+  if (!req.body) return {};
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  return req.body;
+}
+
+async function getStripeConfig() {
+  let docData = {};
+  try {
+    const snap = await admin.firestore().doc("payment_settings/stripe").get();
+    if (snap.exists) docData = snap.data() || {};
+  } catch (e) {
+    console.warn("Unable to read payment_settings/stripe:", e);
+  }
+
+  const secretKey =
+    process.env.STRIPE_SECRET_KEY ||
+    docData.secret_key ||
+    docData.stripe_secret_key ||
+    docData.secretKey ||
+    "";
+
+  const publishableKey =
+    process.env.STRIPE_PUBLISHABLE_KEY ||
+    docData.publishable_key ||
+    docData.stripe_publishable_key ||
+    docData.publishableKey ||
+    "";
+
+  const currency = String(
+    docData.currency ||
+      docData.stripe_currency ||
+      process.env.STRIPE_CURRENCY ||
+      "USD"
+  ).toUpperCase();
+
+  const active = docData.active !== false;
+
+  const priceIds = {
+    school_monthly:
+      docData.school_monthly_price_id ||
+      docData.price_ids?.school_monthly ||
+      "",
+    school_yearly:
+      docData.school_yearly_price_id ||
+      docData.price_ids?.school_yearly ||
+      "",
+    agent_monthly:
+      docData.agent_monthly_price_id ||
+      docData.price_ids?.agent_monthly ||
+      "",
+    agent_yearly:
+      docData.agent_yearly_price_id ||
+      docData.price_ids?.agent_yearly ||
+      "",
+    tutor_monthly:
+      docData.tutor_monthly_price_id ||
+      docData.price_ids?.tutor_monthly ||
+      "",
+    tutor_yearly:
+      docData.tutor_yearly_price_id ||
+      docData.price_ids?.tutor_yearly ||
+      "",
+  };
+
+  return {
+    secretKey: String(secretKey || "").trim(),
+    publishableKey: String(publishableKey || "").trim(),
+    currency,
+    active,
+    priceIds,
+  };
+}
+
+function appendQueryParams(baseUrl, params) {
+  const url = new URL(baseUrl);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  return url.toString();
+}
+
+exports.createStripeCheckoutSession = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "Method not allowed." });
+      return;
+    }
+
+    try {
+      const body = readJsonBody(req);
+
+      const paymentMode =
+        String(body.paymentMode || "payment").toLowerCase() === "subscription"
+          ? "subscription"
+          : "payment";
+
+      const planId = String(body.planId || "").trim();
+      const amountUSD = Number(body.amountUSD || 0);
+      const description = String(body.description || body.itemDescription || "Payment").trim();
+      const payerEmail = String(body.payerEmail || "").trim();
+      const payerName = String(body.payerName || "").trim();
+      const returnUrl = String(body.returnUrl || "").trim();
+
+      if (!returnUrl) {
+        res.status(400).json({ ok: false, error: "Missing returnUrl." });
+        return;
+      }
+
+      const stripeConfig = await getStripeConfig();
+
+      if (!stripeConfig.active || !stripeConfig.secretKey) {
+        res.status(400).json({
+          ok: false,
+          error: "Stripe is not configured on the server.",
+        });
+        return;
+      }
+
+      const stripe = new Stripe(stripeConfig.secretKey);
+
+      const successBase = appendQueryParams(returnUrl, {
+        gp_payment_provider: "stripe",
+        gp_payment_status: "success",
+      });
+
+      const successUrl = `${successBase}${successBase.includes("?") ? "&" : "?"}stripe_session_id={CHECKOUT_SESSION_ID}`;
+
+      const cancelUrl = appendQueryParams(returnUrl, {
+        gp_payment_provider: "stripe",
+        gp_payment_status: "cancel",
+      });
+
+      let session;
+
+      if (paymentMode === "subscription") {
+        if (!planId) {
+          res.status(400).json({ ok: false, error: "Missing planId for Stripe subscription." });
+          return;
+        }
+
+        const stripePriceId = stripeConfig.priceIds?.[planId];
+        if (!stripePriceId) {
+          res.status(400).json({
+            ok: false,
+            error: `Missing Stripe price ID for plan "${planId}".`,
+          });
+          return;
+        }
+
+        session = await stripe.checkout.sessions.create({
+          mode: "subscription",
+          payment_method_types: ["card"],
+          customer_email: payerEmail || undefined,
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+          line_items: [
+            {
+              price: stripePriceId,
+              quantity: 1,
+            },
+          ],
+          metadata: {
+            gp_checkout_mode: "subscription",
+            gp_plan_id: planId,
+            payer_name: payerName || "",
+            payer_email: payerEmail || "",
+            description: description || "Subscription",
+          },
+          subscription_data: {
+            metadata: {
+              gp_checkout_mode: "subscription",
+              gp_plan_id: planId,
+              payer_name: payerName || "",
+              payer_email: payerEmail || "",
+              description: description || "Subscription",
+            },
+          },
+        });
+      } else {
+        if (!(amountUSD > 0)) {
+          res.status(400).json({ ok: false, error: "Invalid amount." });
+          return;
+        }
+
+        session = await stripe.checkout.sessions.create({
+          mode: "payment",
+          payment_method_types: ["card"],
+          customer_email: payerEmail || undefined,
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+          line_items: [
+            {
+              quantity: 1,
+              price_data: {
+                currency: String(stripeConfig.currency || "USD").toLowerCase(),
+                unit_amount: Math.round(amountUSD * 100),
+                product_data: {
+                  name: description || "Payment",
+                },
+              },
+            },
+          ],
+          metadata: {
+            gp_checkout_mode: "payment",
+            gp_plan_id: planId || "",
+            payer_name: payerName || "",
+            payer_email: payerEmail || "",
+            description: description || "Payment",
+          },
+        });
+      }
+
+      res.status(200).json({
+        ok: true,
+        sessionId: session.id,
+        url: session.url || null,
+        publishableKey: stripeConfig.publishableKey || null,
+      });
+    } catch (error) {
+      console.error("createStripeCheckoutSession error:", error);
+      res.status(500).json({
+        ok: false,
+        error: error?.message || "Failed to create Stripe checkout session.",
+      });
+    }
+  });
+});
+
+exports.getStripeCheckoutSession = onRequest(async (req, res) => {
+  cors(req, res, async () => {
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+
+    if (req.method !== "POST" && req.method !== "GET") {
+      res.status(405).json({ ok: false, error: "Method not allowed." });
+      return;
+    }
+
+    try {
+      const body = readJsonBody(req);
+      const sessionId =
+        String(body.sessionId || req.query.sessionId || "").trim();
+
+      if (!sessionId) {
+        res.status(400).json({ ok: false, error: "Missing sessionId." });
+        return;
+      }
+
+      const stripeConfig = await getStripeConfig();
+
+      if (!stripeConfig.secretKey) {
+        res.status(400).json({
+          ok: false,
+          error: "Stripe is not configured on the server.",
+        });
+        return;
+      }
+
+      const stripe = new Stripe(stripeConfig.secretKey);
+
+      const session = await stripe.checkout.sessions.retrieve(sessionId, {
+        expand: ["payment_intent", "subscription"],
+      });
+
+      const paid =
+        session?.payment_status === "paid" ||
+        session?.status === "complete";
+
+      const subscriptionObject =
+        typeof session.subscription === "string" ? null : session.subscription || null;
+
+      const subscriptionId =
+        typeof session.subscription === "string"
+          ? session.subscription
+          : session.subscription?.id || null;
+
+      res.status(200).json({
+        ok: true,
+        paid,
+        session: {
+          id: session.id,
+          mode: session.mode || "payment",
+          status: session.status,
+          payment_status: session.payment_status,
+          amount_total: session.amount_total,
+          currency: session.currency,
+          customer_email: session.customer_email,
+          payment_intent:
+            typeof session.payment_intent === "string"
+              ? session.payment_intent
+              : session.payment_intent?.id || null,
+          subscription_id: subscriptionId,
+          subscription_status: subscriptionObject?.status || null,
+          metadata: session.metadata || {},
+        },
+      });
+    } catch (error) {
+      console.error("getStripeCheckoutSession error:", error);
+      res.status(500).json({
+        ok: false,
+        error: error?.message || "Failed to retrieve Stripe checkout session.",
+      });
     }
   });
 });

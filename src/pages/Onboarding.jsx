@@ -44,6 +44,12 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firest
 
 import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 import SharedPaymentGateway from "@/components/payments/SharedPaymentGateway";
+import {
+  getDefaultPlanIdForRole,
+  getPlanById,
+  getPlansForRole,
+  formatPlanPrice,
+} from "@/config/subscriptionPlans";
 
 async function linkAgentClient({ agentUid, studentUid, inviteId = "" }) {
   if (!agentUid || !studentUid) return;
@@ -433,6 +439,17 @@ const normalizeRole = (r) => {
   return ALL_SUPPORTED_ROLES.includes(v) ? v : DEFAULT_ROLE;
 };
 
+function buildRoleFields(role, { preserveSignupEntry = false, existingSignupEntry = "" } = {}) {
+  const finalRole = normalizeRole(role);
+
+  return {
+    role: finalRole,
+    signup_entry_role: preserveSignupEntry
+      ? existingSignupEntry || finalRole
+      : finalRole,
+  };
+}
+
 function buildUserDefaults({
   email,
   full_name = "",
@@ -440,6 +457,8 @@ function buildUserDefaults({
   collaboratorRef = "",
 }) {
   const finalRole = normalizeRole(role);
+  const defaultPlanId = getDefaultPlanIdForRole(finalRole);
+  const defaultPlan = getPlanById(defaultPlanId);
 
   const collaboratorFields =
     finalRole === "collaborator" && collaboratorRef
@@ -450,10 +469,9 @@ function buildUserDefaults({
       : {};
 
   return {
-    role: finalRole,
+    ...buildRoleFields(finalRole),
     email,
     full_name,
-    signup_entry_role: finalRole,
     phone: "",
     country: "",
     country_code: "",
@@ -467,25 +485,17 @@ function buildUserDefaults({
     subscription_active: false,
     subscription_status: "none",
     subscription_provider: "paypal",
-    subscription_plan: "",
-    subscription_amount: 0,
-    subscription_currency: "USD",
-
-    ...collaboratorFields,
+    subscription_plan: defaultPlanId || "",
+    subscription_interval: defaultPlan?.interval || "",
+    subscription_amount: Number(defaultPlan?.amount || 0),
+    subscription_currency: defaultPlan?.currency || "USD",
 
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
+
+    ...collaboratorFields,
   };
 }
-
-const SUBSCRIPTION_PRICING = {
-  user: { label: "Student", amount: 19, currency: "USD" },
-  tutor: { label: "Tutor", amount: 29, currency: "USD" },
-  agent: { label: "Agent", amount: 29, currency: "USD" },
-  school: { label: "School", amount: 299, currency: "USD" },
-  vendor: { label: "Vendor", amount: 29, currency: "USD" },
-  collaborator: { label: "Collaborator", amount: 0, currency: "USD" },
-};
 
 function buildStudentScanUrl(studentRef) {
   const token = String(studentRef || "").trim();
@@ -632,6 +642,7 @@ export default function Onboarding() {
   const [skipChooseRole, setSkipChooseRole] = useState(roleLockedFromEntry);
   const [currentStep, setCurrentStep] = useState(roleLockedFromEntry ? STEPS.BASIC_INFO : STEPS.CHOOSE_ROLE);
   const [selectedRole, setSelectedRole] = useState(roleHintFromEntry || null);
+  const [selectedPlanId, setSelectedPlanId] = useState(getDefaultPlanIdForRole(roleHintFromEntry || DEFAULT_ROLE));
   const [formData, setFormData] = useState({});
   const [profile, setProfile] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -642,16 +653,38 @@ export default function Onboarding() {
   const [paypalError, setPaypalError] = useState("");
   const [submittingPayment, setSubmittingPayment] = useState(false);
 
+  const rolePlanOptions = useMemo(() => {
+    return getPlansForRole(selectedRole || DEFAULT_ROLE);
+  }, [selectedRole]);
+
+  const selectedPlan = useMemo(() => {
+    const planFromState = getPlanById(selectedPlanId);
+    if (planFromState && planFromState.role === selectedRole) return planFromState;
+
+    const fallbackPlanId = getDefaultPlanIdForRole(selectedRole || DEFAULT_ROLE);
+    return getPlanById(fallbackPlanId);
+  }, [selectedPlanId, selectedRole]);
+
+  useEffect(() => {
+    const validPlanForRole = getPlanById(selectedPlanId);
+    if (!selectedRole) return;
+
+    if (!validPlanForRole || validPlanForRole.role !== selectedRole) {
+      setSelectedPlanId(getDefaultPlanIdForRole(selectedRole));
+    }
+  }, [selectedRole, selectedPlanId]);
+
   const subscriptionRequired = useMemo(() => {
     if (!selectedRole) return false;
     if (selectedRole === "user") return false;
     if (selectedRole === "collaborator") return false;
+    if (selectedRole === "vendor") return false;
     return subscriptionModeEnabled;
   }, [selectedRole, subscriptionModeEnabled]);
 
   const STEP_ORDER = useMemo(() => {
     const core =
-      selectedRole === "user" || selectedRole === "collaborator"
+      selectedRole === "user" || selectedRole === "collaborator" || selectedRole === "vendor"
         ? [STEPS.BASIC_INFO, STEPS.COMPLETE]
         : subscriptionRequired
           ? [STEPS.BASIC_INFO, STEPS.SUBSCRIPTION, STEPS.COMPLETE]
@@ -717,16 +750,13 @@ export default function Onboarding() {
       const data = finalSnap.data() || {};
       setProfile(data);
 
-      const profileRoleRaw =
-        data.role || data.selected_role || data.user_type || data.userType || DEFAULT_ROLE;
+      const profileRoleRaw = data.role || DEFAULT_ROLE;
 
       const roleFromProfile = collaboratorInviteFlow
         ? "collaborator"
         : normalizeRole(profileRoleRaw);
 
-      const hasRoleInProfile = Boolean(
-        data.role || data.selected_role || data.user_type || data.userType
-      );
+      const hasRoleInProfile = Boolean(data.role);
 
       setSkipChooseRole(entryRoleLocked || hasRoleInProfile);
       const effectiveRole = entryRoleLocked
@@ -738,8 +768,7 @@ export default function Onboarding() {
       if (entryRoleLocked && nextStep === STEPS.CHOOSE_ROLE) {
         nextStep = STEPS.BASIC_INFO;
         await updateDoc(ref, {
-          role: effectiveRole,
-          signup_entry_role: effectiveRole,
+          ...buildRoleFields(effectiveRole),
           onboarding_step: STEPS.BASIC_INFO,
           ...(collaboratorInviteFlow && collaboratorRef
             ? {
@@ -757,16 +786,17 @@ export default function Onboarding() {
       } else {
         const needsRoleSync =
           entryRoleLocked &&
-          (data.role !== effectiveRole ||
-            data.signup_entry_role !== effectiveRole);
+          data.role !== effectiveRole;
 
         if (
           needsRoleSync ||
           (collaboratorInviteFlow && collaboratorRef && !data.referred_by_collaborator_code)
         ) {
           await updateDoc(ref, {
-            role: effectiveRole,
-            signup_entry_role: effectiveRole,
+            ...buildRoleFields(effectiveRole, {
+              preserveSignupEntry: true,
+              existingSignupEntry: data.signup_entry_role,
+            }),
             ...(collaboratorInviteFlow && collaboratorRef
               ? {
                   referred_by_collaborator_code:
@@ -781,6 +811,19 @@ export default function Onboarding() {
       }
 
       setSelectedRole(effectiveRole);
+
+      const storedPlanId =
+        typeof data.subscription_plan === "string" && data.subscription_plan.trim()
+          ? data.subscription_plan.trim()
+          : getDefaultPlanIdForRole(effectiveRole);
+
+      const storedPlan = getPlanById(storedPlanId);
+      setSelectedPlanId(
+        storedPlan && storedPlan.role === effectiveRole
+          ? storedPlanId
+          : getDefaultPlanIdForRole(effectiveRole)
+      );
+
       setCurrentStep(nextStep);
 
       setFormData((prev) => {
@@ -820,15 +863,24 @@ export default function Onboarding() {
 
   const handleRoleSelect = async (roleType) => {
     if (roleLockedFromEntry) return;
+
+    const defaultPlanId = getDefaultPlanIdForRole(roleType);
+
     setSelectedRole(roleType);
+    setSelectedPlanId(defaultPlanId);
     setCurrentStep(STEPS.BASIC_INFO);
 
     if (auth.currentUser) {
       const ref = doc(db, "users", auth.currentUser.uid);
+      const defaultPlan = getPlanById(defaultPlanId);
+
       await updateDoc(ref, {
-        role: roleType,
-        signup_entry_role: roleType,
+        ...buildRoleFields(roleType),
         onboarding_step: STEPS.BASIC_INFO,
+        subscription_plan: defaultPlanId || "",
+        subscription_interval: defaultPlan?.interval || "",
+        subscription_amount: Number(defaultPlan?.amount || 0),
+        subscription_currency: defaultPlan?.currency || "USD",
         updatedAt: serverTimestamp(),
       });
     }
@@ -838,8 +890,9 @@ export default function Onboarding() {
 
   const finalizeOnboarding = async ({
     subscriptionActive,
-    paypalOrderId = "",
-    paypalDetails = null,
+    paymentProvider = "",
+    paymentOrderId = "",
+    paymentDetails = null,
     skipped = false,
   }) => {
     if (!auth.currentUser || !selectedRole) return;
@@ -850,30 +903,41 @@ export default function Onboarding() {
       const uid = auth.currentUser.uid;
       const ref = doc(db, "users", uid);
 
-      const plan = SUBSCRIPTION_PRICING[selectedRole] || SUBSCRIPTION_PRICING.user;
+      const fallbackPlanId = getDefaultPlanIdForRole(selectedRole);
+      const finalPlanId = selectedPlan?.id || fallbackPlanId || "";
+      const finalPlan = selectedPlan || getPlanById(fallbackPlanId);
 
       const updates = {
+        ...buildRoleFields(selectedRole, {
+          preserveSignupEntry: true,
+          existingSignupEntry: profile?.signup_entry_role,
+        }),
+
         onboarding_completed: true,
         onboarding_step: STEPS.COMPLETE,
         updatedAt: serverTimestamp(),
 
         subscription_active: Boolean(subscriptionActive),
         subscription_status: subscriptionActive ? "active" : skipped ? "skipped" : "none",
-        subscription_provider: "paypal",
-        subscription_plan: `${selectedRole}_yearly`,
-        subscription_amount: Number(plan.amount) || 0,
-        subscription_currency: plan.currency || "USD",
+        subscription_provider: paymentProvider || "paypal",
+        subscription_plan: finalPlanId,
+        subscription_interval: finalPlan?.interval || "",
+        subscription_amount: Number(finalPlan?.amount || 0),
+        subscription_currency: finalPlan?.currency || "USD",
 
-        paypal_order_id: paypalOrderId || "",
-        paypal_capture: paypalDetails ? paypalDetails : null,
+        payment_provider: paymentProvider || "",
+        payment_order_id: paymentOrderId || "",
+        payment_details: paymentDetails ? paymentDetails : null,
+        paypal_order_id: paymentProvider === "paypal" ? paymentOrderId || "" : "",
+        paypal_capture: paymentProvider === "paypal" ? paymentDetails : null,
+        stripe_session_id: paymentProvider === "stripe" ? paymentOrderId || "" : "",
+        stripe_checkout: paymentProvider === "stripe" ? paymentDetails : null,
         subscribed_at: subscriptionActive ? serverTimestamp() : null,
       };
 
-      if (selectedRole === "collaborator") {
+      if (selectedRole === "collaborator" || selectedRole === "vendor" || selectedRole === "user") {
         updates.subscription_active = false;
         updates.subscription_status = "none";
-        updates.subscription_plan = "";
-        updates.subscription_amount = 0;
       }
 
       await updateDoc(ref, updates);
@@ -925,8 +989,12 @@ export default function Onboarding() {
   const handleBasicInfoSubmit = async () => {
     if (!selectedRole || !validateBasicInfo()) return;
 
+    const fallbackPlanId = getDefaultPlanIdForRole(selectedRole);
+    const finalPlanId = selectedPlan?.id || fallbackPlanId || "";
+    const finalPlan = selectedPlan || getPlanById(fallbackPlanId);
+
     const nextStep =
-      selectedRole === "user" || selectedRole === "collaborator"
+      selectedRole === "user" || selectedRole === "collaborator" || selectedRole === "vendor"
         ? STEPS.COMPLETE
         : subscriptionRequired
           ? STEPS.SUBSCRIPTION
@@ -940,8 +1008,11 @@ export default function Onboarding() {
         phone: formData.phone || "",
         country: formData.country || "",
         country_code: formData.country_code || "",
-        role: selectedRole,
-        signup_entry_role: selectedRole,
+        ...buildRoleFields(selectedRole),
+        subscription_plan: finalPlanId,
+        subscription_interval: finalPlan?.interval || "",
+        subscription_amount: Number(finalPlan?.amount || 0),
+        subscription_currency: finalPlan?.currency || "USD",
         ...(selectedRole === "collaborator" && collaboratorRef
           ? {
               referred_by_collaborator_code: collaboratorRef,
@@ -952,7 +1023,7 @@ export default function Onboarding() {
       });
     }
 
-    if (selectedRole === "user" || selectedRole === "collaborator" || !subscriptionRequired) {
+    if (selectedRole === "user" || selectedRole === "collaborator" || selectedRole === "vendor" || !subscriptionRequired) {
       await finalizeOnboarding({ subscriptionActive: false, skipped: true });
       return;
     }
@@ -965,7 +1036,7 @@ export default function Onboarding() {
 
     if (currentStep === STEPS.COMPLETE) {
       nextStep =
-        selectedRole === "user" || selectedRole === "collaborator" || !subscriptionRequired
+        selectedRole === "user" || selectedRole === "collaborator" || selectedRole === "vendor" || !subscriptionRequired
           ? STEPS.BASIC_INFO
           : STEPS.SUBSCRIPTION;
     } else if (currentStep === STEPS.SUBSCRIPTION) {
@@ -1122,6 +1193,38 @@ export default function Onboarding() {
           </div>
         )}
 
+        {rolePlanOptions.length > 1 && (
+          <div className="mb-6 rounded-xl border border-gray-200 bg-gray-50 p-4 text-left">
+            <div className="text-sm font-semibold text-gray-900 mb-3">
+              {tr("onboarding.subscription.choose_plan", "Choose your billing plan")}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {rolePlanOptions.map((plan) => {
+                const isSelected = selectedPlan?.id === plan.id;
+                return (
+                  <button
+                    key={plan.id}
+                    type="button"
+                    onClick={() => setSelectedPlanId(plan.id)}
+                    className={`rounded-xl border p-4 text-left transition
+                      ${isSelected ? "border-emerald-600 bg-emerald-50" : "border-gray-200 bg-white hover:border-emerald-300"}
+                    `}
+                  >
+                    <div className="text-sm font-semibold text-gray-900">{plan.label}</div>
+                    <div className="mt-1 text-sm text-gray-600 capitalize">
+                      {plan.interval === "month" ? "Monthly" : "Yearly"}
+                    </div>
+                    <div className="mt-2 text-lg font-bold text-gray-900">
+                      {formatPlanPrice(plan)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-6">
           <div>
             <Label htmlFor="full_name">{tr("onboarding.fields.full_name","Full Name *")}</Label>
@@ -1194,7 +1297,9 @@ export default function Onboarding() {
   };
 
   const renderSubscription = () => {
-    const plan = SUBSCRIPTION_PRICING[selectedRole] || SUBSCRIPTION_PRICING.user;
+    const plan = selectedPlan || getPlanById(getDefaultPlanIdForRole(selectedRole));
+
+    if (!plan) return null;
 
     return (
       <div className="max-w-md mx-auto">
@@ -1214,17 +1319,38 @@ export default function Onboarding() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm text-gray-500">{tr("onboarding.subscription.plan","Plan")}</div>
-                <div className="text-lg font-semibold text-gray-900">{plan.label} — Yearly</div>
+                <div className="text-lg font-semibold text-gray-900">{plan.label}</div>
               </div>
               <div className="text-right">
                 <div className="text-sm text-gray-500">{tr("onboarding.subscription.price","Price")}</div>
-                <div className="text-xl font-bold text-gray-900">${plan.amount}/year</div>
+                <div className="text-xl font-bold text-gray-900">{formatPlanPrice(plan)}</div>
               </div>
             </div>
 
+            {rolePlanOptions.length > 1 && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {rolePlanOptions.map((option) => {
+                  const isSelected = option.id === plan.id;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => setSelectedPlanId(option.id)}
+                      className={`rounded-xl border p-4 text-left transition
+                        ${isSelected ? "border-emerald-600 bg-emerald-50" : "border-gray-200 bg-white hover:border-emerald-300"}
+                      `}
+                    >
+                      <div className="text-sm font-semibold text-gray-900">{option.label}</div>
+                      <div className="mt-1 text-lg font-bold text-gray-900">{formatPlanPrice(option)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <div className="mt-4 text-sm text-gray-600">
               <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3">
-                Subscription unlocks your full {plan.label.toLowerCase()} features.
+                Subscription unlocks your full {selectedRole} features.
               </div>
             </div>
 
@@ -1246,9 +1372,11 @@ export default function Onboarding() {
 
               <SharedPaymentGateway
                 amountUSD={plan.amount}
-                itemDescription={`GreenPass Subscription (${plan.label}) - Yearly`}
+                itemDescription={`GreenPass Subscription (${plan.label})`}
                 payerName={formData.full_name || ""}
                 payerEmail={formData.email || ""}
+                paymentMode="subscription"
+                planId={plan.id}
                 onProcessing={() => {
                   setSubmittingPayment(true);
                   setPaypalError("");
@@ -1256,11 +1384,12 @@ export default function Onboarding() {
                 onDoneProcessing={() => {
                   setSubmittingPayment(false);
                 }}
-                onCardPaymentSuccess={async (_method, transactionId, payload) => {
+                onCardPaymentSuccess={async (provider, transactionId, payload) => {
                   await finalizeOnboarding({
                     subscriptionActive: true,
-                    paypalOrderId: transactionId || "",
-                    paypalDetails: payload?.details || payload || null,
+                    paymentProvider: provider || "",
+                    paymentOrderId: transactionId || "",
+                    paymentDetails: payload?.details || payload?.session || payload || null,
                     skipped: false,
                   });
                 }}
@@ -1269,7 +1398,7 @@ export default function Onboarding() {
                   setPaypalError(
                     typeof err === "string"
                       ? err
-                      : err?.message || "PayPal error occurred. Please try again."
+                      : err?.message || "Payment error occurred. Please try again."
                   );
                   setSubmittingPayment(false);
                 }}
@@ -1294,7 +1423,7 @@ export default function Onboarding() {
             </div>
 
             <p className="mt-3 text-xs text-gray-500">
-              Your choice will be saved as <b>subscription_active: true/false</b> in Firestore.
+              Your selected plan and payment result will be saved in Firestore.
             </p>
           </CardContent>
         </Card>
@@ -1366,6 +1495,7 @@ export default function Onboarding() {
             {currentStep === STEPS.SUBSCRIPTION &&
               selectedRole !== "user" &&
               selectedRole !== "collaborator" &&
+              selectedRole !== "vendor" &&
               subscriptionRequired &&
               renderSubscription()}
             {currentStep === STEPS.COMPLETE && renderComplete()}

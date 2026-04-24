@@ -1,23 +1,33 @@
 // src/pages/Dashboard.jsx
-import React, { useState, useEffect } from 'react';
-import { Loader2, AlertTriangle } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '@/utils';
+import React, { useState, useEffect } from "react";
+import { Loader2, AlertTriangle } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { createPageUrl } from "@/utils";
 
 // Firebase
-import { auth, db } from '@/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from "@/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 // Dashboards
-import AdminDashboard from '../components/dashboards/AdminDashboard';
-import AgentDashboard from '../components/dashboards/AgentDashboard';
-import SchoolDashboard from '../components/dashboards/SchoolDashboard';
-import StudentDashboard from '../components/dashboards/StudentDashboard';
-import TutorDashboard from '../components/dashboards/TutorDashboard';
-import VendorDashboard from '../components/dashboards/VendorDashboard';
-import CollaboratorDashboard from '../components/dashboards/CollaboratorDashboard';
+import AdminDashboard from "../components/dashboards/AdminDashboard";
+import AgentDashboard from "../components/dashboards/AgentDashboard";
+import SchoolDashboard from "../components/dashboards/SchoolDashboard";
+import StudentDashboard from "../components/dashboards/StudentDashboard";
+import TutorDashboard from "../components/dashboards/TutorDashboard";
+import VendorDashboard from "../components/dashboards/VendorDashboard";
+import CollaboratorDashboard from "../components/dashboards/CollaboratorDashboard";
 import { useTr } from "@/i18n/useTr";
+
+function normalizeRole(role) {
+  const raw = String(role || "student").toLowerCase().trim();
+
+  if (raw === "user") return "student";
+  if (raw === "institution") return "school";
+  if (raw === "provider") return "vendor";
+
+  return raw || "student";
+}
 
 export default function Dashboard() {
   const { tr } = useTr("dashboard");
@@ -25,36 +35,44 @@ export default function Dashboard() {
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
   const navigate = useNavigate();
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
-        navigate(createPageUrl('Welcome'));
+        navigate(createPageUrl("Welcome"));
         setLoading(false);
         return;
       }
 
       try {
-        const userRef = doc(db, 'users', firebaseUser.uid);
+        const userRef = doc(db, "users", firebaseUser.uid);
         const userSnap = await getDoc(userRef);
 
         if (userSnap.exists()) {
+          const data = userSnap.data() || {};
+
           setCurrentUser({
             uid: firebaseUser.uid,
+            id: firebaseUser.uid,
+            user_id: firebaseUser.uid,
             email: firebaseUser.email,
-            ...userSnap.data(),
+            ...data,
+            role: normalizeRole(data.role),
           });
         } else {
           setCurrentUser({
             uid: firebaseUser.uid,
+            id: firebaseUser.uid,
+            user_id: firebaseUser.uid,
             email: firebaseUser.email,
-            user_type: 'student',
+            role: "student",
           });
         }
       } catch (e) {
-        console.error('Error fetching user profile from Firestore:', e);
-        setError('Could not load user information. Please try refreshing the page.');
+        console.error("Error fetching user profile from Firestore:", e);
+        setError("Could not load user information. Please try refreshing the page.");
       } finally {
         setLoading(false);
       }
@@ -89,26 +107,25 @@ export default function Dashboard() {
     );
   }
 
-  const effectiveRole =
-    currentUser.is_collaborator
-      ? 'collaborator'
-      : currentUser.user_type || currentUser.role || currentUser.selected_role || currentUser.userType;
+  const effectiveRole = currentUser.is_collaborator
+    ? "collaborator"
+    : normalizeRole(currentUser.role);
 
   switch (effectiveRole) {
-    case 'admin':
+    case "admin":
       return <AdminDashboard user={currentUser} />;
-    case 'agent':
+    case "agent":
       return <AgentDashboard user={currentUser} />;
-    case 'school':
+    case "school":
       return <SchoolDashboard user={currentUser} />;
-    case 'tutor':
+    case "tutor":
       return <TutorDashboard user={currentUser} />;
-    case 'vendor':
+    case "vendor":
       return <VendorDashboard user={currentUser} />;
-    case 'collaborator':
+    case "collaborator":
       return <CollaboratorDashboard user={currentUser} />;
-    case 'student':
-    case 'user':
+    case "student":
+    case "user":
     default:
       return <StudentDashboard user={currentUser} />;
   }

@@ -80,32 +80,39 @@ const toValidDate = (v) => {
       const d = v.toDate();
       return isNaN(d?.getTime()) ? null : d;
     }
+
     if (typeof v.seconds === "number") {
       const d = new Date(v.seconds * 1000);
       return isNaN(d?.getTime()) ? null : d;
     }
   }
+
   if (typeof v === "number") {
     const d = new Date(v > 1e12 ? v : v * 1000);
     return isNaN(d?.getTime()) ? null : d;
   }
+
   if (typeof v === "string") {
     const s = v.trim();
     if (!s) return null;
+
     if (/^\d+$/.test(s)) {
       const n = Number(s);
       const d = new Date(n > 1e12 ? n : n * 1000);
       return isNaN(d?.getTime()) ? null : d;
     }
+
     const d = new Date(s);
     return isNaN(d?.getTime()) ? null : d;
   }
+
   return null;
 };
 
 const arr = (x) => (Array.isArray(x) ? x : x ? [x] : []);
 const POST_PREVIEW_TEXT_LIMIT = 320;
 const MAX_DASHBOARD_MEDIA = 4;
+
 const buildPostDetailUrl = (postId) =>
   `${createPageUrl("PostDetail")}?id=${encodeURIComponent(postId || "")}`;
 /* --------------------------------------------------------------------- */
@@ -113,9 +120,12 @@ const buildPostDetailUrl = (postId) =>
 /* ✅ Uses your REAL user doc fields */
 function isSubscribedUser(u) {
   if (!u) return false;
+
   if (u.subscription_active === true) return true;
+
   const status = String(u.subscription_status || "").toLowerCase().trim();
   const ok = new Set(["active", "paid", "trialing"]);
+
   return ok.has(status);
 }
 
@@ -123,6 +133,7 @@ const SubscribeBanner = ({ to, user }) => {
   const { tr } = useTr("agent_dashboard");
 
   const status = String(user?.subscription_status || "").toLowerCase().trim();
+
   const message =
     status === "skipped"
       ? tr(
@@ -145,6 +156,7 @@ const SubscribeBanner = ({ to, user }) => {
         <div className="mt-0.5">
           <CreditCard className="w-5 h-5 text-red-600" />
         </div>
+
         <div>
           <p className="font-semibold text-red-800">
             {tr("sub_required", "Subscription required")}
@@ -154,7 +166,9 @@ const SubscribeBanner = ({ to, user }) => {
       </div>
 
       <Link to={to}>
-        <Button className="bg-red-600 hover:bg-red-700 w-full sm:w-auto">Subscribe Now</Button>
+        <Button className="bg-red-600 hover:bg-red-700 w-full sm:w-auto">
+          Subscribe Now
+        </Button>
       </Link>
     </div>
   );
@@ -173,28 +187,51 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
   };
 
   const agent = user?.agent_profile || {};
+
   const companyName = agent.company_name ?? user?.company_name ?? "";
+
   const businessLicense =
     agent.business_license_mst ??
     agent.business_license ??
     user?.business_license_mst ??
     user?.business_license ??
     "";
+
   const paypalEmail = agent.paypal_email ?? user?.paypal_email ?? "";
 
   const missing = [];
-  if (isEmpty(user?.full_name)) missing.push({ key: "full_name", label: tr("field_full_name", "Full Name") });
-  if (isEmpty(user?.phone)) missing.push({ key: "phone", label: tr("field_phone", "Phone") });
-  if (isEmpty(user?.country)) missing.push({ key: "country", label: tr("field_country", "Country") });
-  if (isEmpty(companyName)) missing.push({ key: "company_name", label: tr("field_company_name", "Company Name") });
-  if (isEmpty(businessLicense)) {
-    missing.push({ key: "business_license_mst", label: tr("field_business_license", "Business License (MST)") });
+
+  if (isEmpty(user?.full_name)) {
+    missing.push({ key: "full_name", label: tr("field_full_name", "Full Name") });
   }
-  if (isEmpty(paypalEmail)) missing.push({ key: "paypal_email", label: tr("field_paypal_email", "PayPal Email") });
+
+  if (isEmpty(user?.phone)) {
+    missing.push({ key: "phone", label: tr("field_phone", "Phone") });
+  }
+
+  if (isEmpty(user?.country)) {
+    missing.push({ key: "country", label: tr("field_country", "Country") });
+  }
+
+  if (isEmpty(companyName)) {
+    missing.push({ key: "company_name", label: tr("field_company_name", "Company Name") });
+  }
+
+  if (isEmpty(businessLicense)) {
+    missing.push({
+      key: "business_license_mst",
+      label: tr("field_business_license", "Business License (MST)"),
+    });
+  }
+
+  if (isEmpty(paypalEmail)) {
+    missing.push({ key: "paypal_email", label: tr("field_paypal_email", "PayPal Email") });
+  }
 
   if (missing.length === 0) return null;
 
   const totalRequired = 6;
+
   const percent = Math.max(
     0,
     Math.min(100, Math.round(((totalRequired - missing.length) / totalRequired) * 100))
@@ -205,6 +242,7 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
       typeof f === "string"
         ? f
         : (f && typeof f === "object" && (f.label || f.name || f.title || f.key || f.field)) || "";
+
     const key = String(raw || "").trim();
 
     const map = {
@@ -225,10 +263,14 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
     };
 
     const k = map[key] || null;
+
     return k ? tr(k, key) : key || tr("missing_field", "Missing field");
   };
 
-  const missingText = `${tr("missing_prefix", "Missing")}: ${missing.map(fieldLabel).join(", ")}`;
+  const missingText = `${tr("missing_prefix", "Missing")}: ${missing
+    .map(fieldLabel)
+    .join(", ")}`;
+
   const onboardingUrl = createPageUrl("Onboarding");
 
   return (
@@ -243,7 +285,8 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
           </div>
 
           <div className="mt-1 text-sm text-orange-800">
-            {tr("complete_profile_desc", "Complete your profile to access all platform features.")} {missingText}
+            {tr("complete_profile_desc", "Complete your profile to access all platform features.")}{" "}
+            {missingText}
           </div>
 
           <div className="mt-3 h-2 w-full rounded-full bg-orange-200 overflow-hidden">
@@ -255,6 +298,7 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
           <div className="text-sm font-semibold text-orange-900 whitespace-nowrap">
             {percent}% {tr("complete", "Complete")}
           </div>
+
           <Link to={onboardingUrl}>
             <Button className="bg-orange-600 hover:bg-orange-700">
               {tr("complete_profile_cta", "Complete Profile")}
@@ -270,7 +314,9 @@ const InlineProfileCompletionBanner = ({ user, relatedEntity }) => {
 const Shortcut = ({ icon, label, to }) => (
   <Link to={to} className="block">
     <div className="flex items-center gap-3 rounded-2xl px-3 py-2 hover:bg-gray-50 transition">
-      <div className="h-9 w-9 rounded-xl bg-gray-100 flex items-center justify-center">{icon}</div>
+      <div className="h-9 w-9 rounded-xl bg-gray-100 flex items-center justify-center">
+        {icon}
+      </div>
       <div className="text-sm font-medium text-gray-900">{label}</div>
     </div>
   </Link>
@@ -308,7 +354,12 @@ const flagUrlFromCode = (code) => {
 
 function FollowButton({ currentUserId, creatorId, creatorRole, size = "sm", className = "" }) {
   const { tr } = useTr("agent_dashboard");
-  const [state, setState] = useState({ following: false, requested: false });
+
+  const [state, setState] = useState({
+    following: false,
+    requested: false,
+  });
+
   const disabled = !currentUserId || !creatorId || currentUserId === creatorId;
 
   useEffect(() => {
@@ -316,19 +367,23 @@ function FollowButton({ currentUserId, creatorId, creatorRole, size = "sm", clas
       setState({ following: false, requested: false });
       return;
     }
+
     return listenFollowState({ meId: currentUserId, targetId: creatorId }, setState);
   }, [currentUserId, creatorId, disabled]);
 
   const onClick = async () => {
     if (disabled) return;
+
     if (state.following) {
       await unfollowUser({ followerId: currentUserId, followeeId: creatorId });
       return;
     }
+
     if (state.requested) {
       await cancelFollowRequest({ followerId: currentUserId, followeeId: creatorId });
       return;
     }
+
     await sendFollowRequest({ followerId: currentUserId, followeeId: creatorId });
   };
 
@@ -357,6 +412,7 @@ const MediaGallery = ({ media = [], postId }) => {
   const { tr } = useTr("agent_dashboard");
 
   const items = Array.isArray(media) ? media.filter((m) => m?.url) : [];
+
   if (!items.length || !postId) return null;
 
   const visibleItems = items.slice(0, MAX_DASHBOARD_MEDIA);
@@ -499,12 +555,17 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
   const isMine = currentUserId && authorId && currentUserId === authorId;
   const isAdminPost = String(authorRole || "").toLowerCase() === "admin";
+
   const [boostOpen, setBoostOpen] = useState(false);
+
   const messageUrl = `${createPageUrl("Messages")}?with=${encodeURIComponent(authorId || "")}`;
   const postDetailUrl = buildPostDetailUrl(post?.id);
   const viewProfileUrl = authorId ? `/view-profile/${encodeURIComponent(authorId)}` : "";
+
   const fullText = String(post?.text || "");
+
   const hasLongText = fullText.length > POST_PREVIEW_TEXT_LIMIT;
+
   const previewText = hasLongText
     ? `${fullText.slice(0, POST_PREVIEW_TEXT_LIMIT).trimEnd()}…`
     : fullText;
@@ -534,16 +595,19 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
     const url = getShareUrl();
     const title = "GreenPass";
     const text = String(post?.text || "").slice(0, 200);
+
     try {
       if (navigator.share && url) {
         await navigator.share({ title, text, url });
         return;
       }
+
       if (navigator.clipboard && url) {
         await navigator.clipboard.writeText(url);
         alert(tr("link_copied", "Link copied"));
         return;
       }
+
       if (url) window.prompt(tr("copy_link", "Copy this link:"), url);
     } catch (e) {
       console.error("share failed:", e);
@@ -552,10 +616,14 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
   const handleDelete = async () => {
     if (!post?.id || !isMine) return;
+
     const ok = window.confirm(tr("confirm_delete_post", "Delete this post?"));
+
     if (!ok) return;
+
     setMenuBusy(true);
     setMenuError("");
+
     try {
       await deleteDoc(doc(db, "posts", String(post.id)));
     } catch (e) {
@@ -568,18 +636,23 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
   const handleSaveEdit = async () => {
     if (!post?.id || !isMine) return;
+
     const next = String(editText || "").trim();
+
     if (!next) {
       setMenuError(tr("post_cannot_be_empty", "Post cannot be empty."));
       return;
     }
+
     setMenuBusy(true);
     setMenuError("");
+
     try {
       await updateDoc(doc(db, "posts", String(post.id)), {
         text: next,
         editedAt: serverTimestamp(),
       });
+
       setEditOpen(false);
     } catch (e) {
       console.error("edit post failed:", e);
@@ -591,13 +664,17 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
   const handleSubmitReport = async () => {
     if (!post?.id || !currentUserId) return;
+
     const reason = String(reportReason || "").trim();
+
     if (!reason) {
       setMenuError(tr("report_reason_required", "Please enter a reason."));
       return;
     }
+
     setMenuBusy(true);
     setMenuError("");
+
     try {
       await addDoc(collection(db, "post_reports"), {
         postId: String(post.id),
@@ -608,6 +685,7 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
         status: "open",
         createdAt: serverTimestamp(),
       });
+
       setReportReason("");
       setReportOpen(false);
       alert(tr("report_submitted", "Report submitted"));
@@ -625,6 +703,7 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
         <div className="p-4 flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <Avatar name={authorName} />
+
             <div className="leading-tight">
               <div className="flex items-center gap-2 flex-wrap">
                 {authorId ? (
@@ -646,9 +725,11 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
                   {String(authorRole || "agent").toUpperCase()}
                 </Badge>
               </div>
+
               <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
                 <span>{created ? format(created, "MMM dd, h:mm a") : "—"}</span>
                 <span>•</span>
+
                 {authorCC ? (
                   <>
                     <img
@@ -671,10 +752,17 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="text-gray-500" type="button" disabled={menuBusy}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-gray-500"
+                type="button"
+                disabled={menuBusy}
+              >
                 <MoreHorizontal className="h-5 w-5" />
               </Button>
             </DropdownMenuTrigger>
+
             <DropdownMenuContent align="end" className="w-44">
               {isMine ? (
                 <>
@@ -684,21 +772,29 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
                       {tr("edit", "Edit")}
                     </span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleDelete} disabled={menuBusy} className="text-red-600">
+
+                  <DropdownMenuItem
+                    onClick={handleDelete}
+                    disabled={menuBusy}
+                    className="text-red-600"
+                  >
                     <span className="flex items-center gap-2">
                       <Trash2 className="h-4 w-4" />
                       {tr("delete", "Delete")}
                     </span>
                   </DropdownMenuItem>
+
                   <DropdownMenuSeparator />
                 </>
               ) : null}
+
               <DropdownMenuItem onClick={handleShare} disabled={menuBusy}>
                 <span className="flex items-center gap-2">
                   <Share2 className="h-4 w-4" />
                   {tr("share", "Share")}
                 </span>
               </DropdownMenuItem>
+
               <DropdownMenuItem onClick={() => setReportOpen(true)} disabled={menuBusy}>
                 <span className="flex items-center gap-2">
                   <Flag className="h-4 w-4" />
@@ -714,17 +810,26 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
             <DialogHeader>
               <DialogTitle>{tr("edit_post", "Edit post")}</DialogTitle>
             </DialogHeader>
+
             <textarea
               value={editText}
               onChange={(e) => setEditText(e.target.value)}
               className="mt-2 w-full rounded-2xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 min-h-[120px]"
               placeholder={tr("edit_placeholder", "Update your post...")}
             />
+
             {menuError ? <div className="mt-2 text-sm text-red-600">{menuError}</div> : null}
+
             <div className="mt-3 flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setEditOpen(false)} disabled={menuBusy}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setEditOpen(false)}
+                disabled={menuBusy}
+              >
                 {tr("cancel", "Cancel")}
               </Button>
+
               <Button type="button" onClick={handleSaveEdit} disabled={menuBusy}>
                 {menuBusy ? tr("saving", "Saving...") : tr("save", "Save")}
               </Button>
@@ -737,22 +842,36 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
             <DialogHeader>
               <DialogTitle>{tr("report_post", "Report post")}</DialogTitle>
             </DialogHeader>
+
             <div className="text-sm text-gray-600">
               {tr("report_help", "Tell us what’s wrong with this post. Our team will review it.")}
             </div>
+
             <textarea
               value={reportReason}
               onChange={(e) => setReportReason(e.target.value)}
               className="mt-2 w-full rounded-2xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 min-h-[120px]"
               placeholder={tr("report_placeholder", "Reason (spam, harassment, scam, etc.)")}
             />
+
             {menuError ? <div className="mt-2 text-sm text-red-600">{menuError}</div> : null}
+
             <div className="mt-3 flex justify-end gap-2">
-              <Button type="button" variant="ghost" onClick={() => setReportOpen(false)} disabled={menuBusy}>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setReportOpen(false)}
+                disabled={menuBusy}
+              >
                 {tr("cancel", "Cancel")}
               </Button>
-              <Button type="button" onClick={handleSubmitReport} disabled={menuBusy || !currentUserId}>
-                {menuBusy ? tr("submitting", "Submitting...") : tr("submit", "Submit")}
+
+              <Button
+                type="button"
+                onClick={handleSubmitReport}
+                disabled={menuBusy || !currentUserId}
+              >
+                {menuBusy ? tr("submitting", "Submitting") : tr("submit", "Submit")}
               </Button>
             </div>
           </DialogContent>
@@ -761,6 +880,7 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
         {fullText ? (
           <div className="px-4 pb-3">
             <div className="text-sm text-gray-800 whitespace-pre-line">{previewText}</div>
+
             {hasLongText ? (
               <div className="mt-2">
                 <Link to={postDetailUrl} state={{ postId: post?.id }}>
@@ -799,7 +919,8 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
                         type="button"
                         onClick={() => setBoostOpen(true)}
                       >
-                        <Sparkles className="h-4 w-4 mr-2" /> {tr("boost_your_post", "Boost your post")}
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        {tr("boost_your_post", "Boost your post")}
                       </Button>
                     ) : null
                   ) : (
@@ -826,7 +947,8 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
                         : tr("message", "Message")
                     }
                   >
-                    <MessageCircle className="h-4 w-4 mr-2" /> {tr("message", "Message")}
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    {tr("message", "Message")}
                   </Button>
                 </Link>
               </>
@@ -844,7 +966,51 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, author
 
 export default function AgentDashboard({ user }) {
   const { tr } = useTr("agent_dashboard");
-  const userId = user?.id || user?.uid || user?.user_id;
+
+  // ✅ IMPORTANT FIX:
+  // Prioritize Firebase Auth UID first, because Firestore users/{uid} should use the auth UID as document ID.
+  const initialUserId = user?.uid || user?.user_id || user?.id;
+
+  const [liveUser, setLiveUser] = useState(user);
+
+  const userId = liveUser?.uid || liveUser?.user_id || liveUser?.id || initialUserId;
+
+  useEffect(() => {
+    const uid = initialUserId;
+
+    if (!uid) {
+      setLiveUser(user);
+      return;
+    }
+
+    const unsub = onSnapshot(
+      doc(db, "users", uid),
+      (snap) => {
+        if (!snap.exists()) {
+          setLiveUser(user);
+          return;
+        }
+
+        const data = snap.data() || {};
+
+        setLiveUser({
+          id: snap.id,
+          uid: snap.id,
+          user_id: snap.id,
+          ...data,
+        });
+      },
+      (err) => {
+        console.error("AgentDashboard user subscription listener error:", err);
+        setLiveUser(user);
+      }
+    );
+
+    return () => unsub();
+  }, [initialUserId, user]);
+
+  const effectiveUser = liveUser || user;
+
   const [stats, setStats] = useState({
     totalStudents: 0,
     totalEarnings: 0,
@@ -853,6 +1019,7 @@ export default function AgentDashboard({ user }) {
     commissionRate: 10,
     referralCode: "",
   });
+
   const [agent, setAgent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [profileCompletion, setProfileCompletion] = useState({ isComplete: true });
@@ -873,23 +1040,36 @@ export default function AgentDashboard({ user }) {
   useEffect(() => {
     const loadDashboardData = async () => {
       try {
+        const effectiveId =
+          effectiveUser?.uid || effectiveUser?.user_id || effectiveUser?.id || userId;
+
+        if (!effectiveId) {
+          setLoading(false);
+          return;
+        }
+
         const [agentData, students] = await Promise.all([
-          Agent.filter({ user_id: user.id }),
-          User.filter({ referred_by_agent_id: user.id }),
+          Agent.filter({ user_id: effectiveId }),
+          User.filter({ referred_by_agent_id: effectiveId }),
         ]);
 
         const agentRecord = agentData.length > 0 ? agentData[0] : null;
+
         setAgent(agentRecord);
 
-        const completion = getProfileCompletionData(user, agentRecord);
+        const completion = getProfileCompletionData(effectiveUser, agentRecord);
+
         setProfileCompletion(completion);
+
         const now = new Date();
+
         const thisMonth = arr(students).filter((s) => {
           const d = toValidDate(s.created_date);
           return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
         });
 
         const totalEarnings = 0;
+
         setStats({
           totalStudents: arr(students).length,
           totalEarnings,
@@ -906,10 +1086,11 @@ export default function AgentDashboard({ user }) {
     };
 
     loadDashboardData();
-  }, [user]);
+  }, [effectiveUser, userId]);
 
   useEffect(() => {
     if (!userId) return;
+
     setCommunityLoading(true);
 
     const q = query(
@@ -924,34 +1105,43 @@ export default function AgentDashboard({ user }) {
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         const now = new Date();
+
         list.sort((a, b) => {
           const aUntil = a?.boosted_until?.toDate
             ? a.boosted_until.toDate()
             : a?.boosted_until?.seconds
             ? new Date(a.boosted_until.seconds * 1000)
             : null;
+
           const bUntil = b?.boosted_until?.toDate
             ? b.boosted_until.toDate()
             : b?.boosted_until?.seconds
             ? new Date(b.boosted_until.seconds * 1000)
             : null;
+
           const aBoost = aUntil && aUntil > now;
           const bBoost = bUntil && bUntil > now;
+
           if (aBoost !== bBoost) return bBoost ? 1 : -1;
+
           const aCreated = a?.createdAt?.toDate
             ? a.createdAt.toDate()
             : a?.createdAt?.seconds
             ? new Date(a.createdAt.seconds * 1000)
             : null;
+
           const bCreated = b?.createdAt?.toDate
             ? b.createdAt.toDate()
             : b?.createdAt?.seconds
             ? new Date(b.createdAt.seconds * 1000)
             : null;
+
           const at = aCreated ? aCreated.getTime() : 0;
           const bt = bCreated ? bCreated.getTime() : 0;
+
           return bt - at;
         });
+
         setCommunityPosts(list);
         setCommunityLoading(false);
       },
@@ -975,6 +1165,7 @@ export default function AgentDashboard({ user }) {
     );
 
     const missing = ids.filter((uid) => !authorCountryByUid?.[uid]);
+
     if (missing.length === 0) return;
 
     let cancelled = false;
@@ -985,6 +1176,7 @@ export default function AgentDashboard({ user }) {
           missing.map(async (uid) => {
             try {
               let d = {};
+
               try {
                 const snap = await getDoc(doc(db, "users", uid));
                 if (snap.exists()) d = snap.data() || {};
@@ -1007,7 +1199,9 @@ export default function AgentDashboard({ user }) {
               }
 
               const country = d.country || d.country_name || "";
-              const country_code = d.country_code || d.countryCode || d.countryCode2 || d.countryCodeISO || "";
+              const country_code =
+                d.country_code || d.countryCode || d.countryCode2 || d.countryCodeISO || "";
+
               return [uid, { country, country_code }];
             } catch {
               return [uid, { country: "", country_code: "" }];
@@ -1016,11 +1210,14 @@ export default function AgentDashboard({ user }) {
         );
 
         if (cancelled) return;
+
         setAuthorCountryByUid((prev) => {
           const next = { ...(prev || {}) };
+
           entries.forEach(([uid, val]) => {
             next[uid] = val;
           });
+
           return next;
         });
       } catch (e) {
@@ -1052,6 +1249,7 @@ export default function AgentDashboard({ user }) {
         if (p?.url) URL.revokeObjectURL(p.url);
       });
     };
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attachments]);
 
@@ -1059,11 +1257,14 @@ export default function AgentDashboard({ user }) {
 
   const onFilesSelected = (e) => {
     const files = Array.from(e.target.files || []);
+
     if (!files.length) return;
 
     const key = (f) => `${f.name}|${f.size}|${f.lastModified}`;
     const map = new Map();
+
     [...attachments, ...files].forEach((f) => map.set(key(f), f));
+
     setAttachments(Array.from(map.values()));
 
     e.target.value = "";
@@ -1071,7 +1272,9 @@ export default function AgentDashboard({ user }) {
 
   const removeAttachment = (id) => {
     const toRemove = attachmentPreviews.find((p) => p.id === id);
+
     if (!toRemove) return;
+
     setAttachments((prev) =>
       prev.filter((f) => !(f.name === toRemove.name && f.type === toRemove.type))
     );
@@ -1089,10 +1292,13 @@ export default function AgentDashboard({ user }) {
     const path = `posts/${postId}/${idx}-${Date.now()}${safeExt}`;
 
     const sref = storageRef(storage, path);
+
     await uploadBytes(sref, file, { contentType: file.type || undefined });
+
     const url = await getDownloadURL(sref);
 
     const type = String(file.type || "").startsWith("video/") ? "video" : "image";
+
     return {
       type,
       url,
@@ -1103,24 +1309,33 @@ export default function AgentDashboard({ user }) {
     };
   };
 
-  const isSubscribed = useMemo(() => isSubscribedUser(user), [user]);
+  const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
+
   const { subscriptionModeEnabled } = useSubscriptionMode();
+
   const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
 
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+
   const canCreateEvent = !subscriptionModeEnabled || isSubscribed;
 
   const [limitOpen, setLimitOpen] = useState(false);
+
   useEffect(() => {
     if (!userId) return;
+
     const meRef = doc(db, "users", userId);
+
     const unsub = onSnapshot(meRef, (snap) => {
       if (!snap.exists()) return;
+
       const d = snap.data() || {};
+
       setQuotaUsed(Number(d.post_quota_used || 0));
       setQuotaMonth(String(d.post_quota_month || ""));
     });
+
     return () => unsub();
   }, [userId]);
 
@@ -1132,10 +1347,11 @@ export default function AgentDashboard({ user }) {
     );
   }
 
-  const firstName = user?.full_name?.split(" ")[0] || "Agent";
+  const firstName = effectiveUser?.full_name?.split(" ")[0] || "Agent";
 
   const handlePost = async () => {
     const text = composerText.trim();
+
     if (!text && attachments.length === 0) return;
     if (!userId) return;
 
@@ -1143,7 +1359,7 @@ export default function AgentDashboard({ user }) {
     setPostError("");
 
     try {
-      const authorName = user?.full_name || "Agent";
+      const authorName = effectiveUser?.full_name || "Agent";
       const canEnforceLimit = subscriptionModeEnabled === true;
       const isUnlimited = isSubscribed === true;
 
@@ -1154,11 +1370,15 @@ export default function AgentDashboard({ user }) {
 
         if (canEnforceLimit && !isUnlimited) {
           const q = await ensureMonthlyPostQuota(tx, meRef);
+
           if (q.used >= 10) throw new Error("POST_LIMIT_REACHED");
 
           tx.set(
             meRef,
-            { post_quota_used: increment(1), post_quota_updatedAt: serverTimestamp() },
+            {
+              post_quota_used: increment(1),
+              post_quota_updatedAt: serverTimestamp(),
+            },
             { merge: true }
           );
         }
@@ -1182,15 +1402,20 @@ export default function AgentDashboard({ user }) {
 
       if (postDocId && attachments.length > 0) {
         const uploaded = [];
+
         for (let i = 0; i < attachments.length; i++) {
           uploaded.push(await uploadOne(attachments[i], postDocId, i));
         }
-        await updateDoc(doc(db, "posts", postDocId), { media: uploaded });
+
+        await updateDoc(doc(db, "posts", postDocId), {
+          media: uploaded,
+        });
       }
 
       clearComposer();
     } catch (e) {
       console.error("handlePost error:", e);
+
       if (String(e?.message || "").includes("POST_LIMIT_REACHED")) {
         setLimitOpen(true);
         setPostError(tr("limit_desc", "You’ve reached the posting limit. Subscribe to post more."));
@@ -1209,13 +1434,16 @@ export default function AgentDashboard({ user }) {
           <DialogHeader>
             <DialogTitle>{tr("limit_title", "Posting limit reached")}</DialogTitle>
           </DialogHeader>
+
           <div className="text-sm text-gray-700">
             {tr("limit_desc", "You’ve reached the posting limit. Subscribe to post more.")}
           </div>
+
           <div className="mt-4 flex gap-2 justify-end">
             <Button type="button" variant="outline" onClick={() => setLimitOpen(false)}>
               Close
             </Button>
+
             <Link to={subscribeUrl}>
               <Button type="button" className="bg-emerald-600 hover:bg-emerald-700">
                 Subscribe
@@ -1228,11 +1456,13 @@ export default function AgentDashboard({ user }) {
       <CreateEventDialog
         open={createEventOpen}
         onOpenChange={setCreateEventOpen}
-        user={user}
+        user={effectiveUser}
         role="agent"
         allowedPlatforms={["nasio", "eventbrite"]}
         disabledReason={
-          !canCreateEvent ? tr("subscription_required", "Subscription required to create events") : null
+          !canCreateEvent
+            ? tr("subscription_required", "Subscription required to create events")
+            : null
         }
       />
 
@@ -1248,12 +1478,12 @@ export default function AgentDashboard({ user }) {
 
           {subscriptionModeEnabled && !isSubscribed && (
             <div className="mb-4">
-              <SubscribeBanner to={subscribeUrl} user={user} />
+              <SubscribeBanner to={subscribeUrl} user={effectiveUser} />
             </div>
           )}
 
           <div className="mb-4">
-            <InlineProfileCompletionBanner user={user} relatedEntity={agent} />
+            <InlineProfileCompletionBanner user={effectiveUser} relatedEntity={agent} />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-10">
@@ -1263,22 +1493,26 @@ export default function AgentDashboard({ user }) {
                   <div className="px-2 py-2 text-xs font-semibold text-gray-500">
                     {tr("shortcuts", "Shortcuts")}
                   </div>
+
                   <div className="space-y-1">
                     <Shortcut
                       to={createPageUrl("MyStudents")}
                       label={tr("my_students", "My Students")}
                       icon={<Users className="h-5 w-5 text-blue-600" />}
                     />
+
                     <Shortcut
                       to={createPageUrl("AgentLeads")}
                       label={tr("find_leads", "Find Leads")}
                       icon={<UserPlus className="h-5 w-5 text-orange-600" />}
                     />
+
                     <Shortcut
                       to={createPageUrl("Events")}
                       label={tr("events", "Events")}
                       icon={<Ticket className="h-5 w-5 text-emerald-600" />}
                     />
+
                     <Shortcut
                       to={createPageUrl("Directory")}
                       label={tr("directory", "Directory")}
@@ -1290,11 +1524,15 @@ export default function AgentDashboard({ user }) {
 
               <div className="mt-4 rounded-2xl border bg-white p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-gray-900">{tr("invite", "Invite")}</div>
+                  <div className="text-sm font-semibold text-gray-900">
+                    {tr("invite", "Invite")}
+                  </div>
+
                   <Button size="sm" onClick={() => setInviteOpen(true)}>
                     {tr("invite", "Invite")}
                   </Button>
                 </div>
+
                 <div className="mt-2 text-xs text-muted-foreground">
                   {tr("invite_hint", "Invite agents, schools, or students via link or email.")}
                 </div>
@@ -1313,8 +1551,11 @@ export default function AgentDashboard({ user }) {
                   <div className="text-sm font-semibold text-gray-900">
                     {tr("create_event", "Create Event")}
                   </div>
+
                   {!canCreateEvent ? (
-                    <Badge className="bg-yellow-100 text-yellow-800">{tr("pending", "Pending")}</Badge>
+                    <Badge className="bg-yellow-100 text-yellow-800">
+                      {tr("pending", "Pending")}
+                    </Badge>
                   ) : null}
                 </div>
 
@@ -1347,7 +1588,8 @@ export default function AgentDashboard({ user }) {
                 <div className="rounded-2xl border bg-white">
                   <div className="p-3 flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3 w-full">
-                      <Avatar name={user?.full_name || "Agent"} />
+                      <Avatar name={effectiveUser?.full_name || "Agent"} />
+
                       <div className="w-full">
                         <div className="text-sm font-semibold text-gray-900">
                           {tr("whats_on_your_mind", "What’s on your mind,")} {firstName}?
@@ -1376,8 +1618,12 @@ export default function AgentDashboard({ user }) {
                           <div className="mt-3 grid grid-cols-2 gap-2">
                             {attachmentPreviews.map((p) => {
                               const isVideo = String(p.type || "").startsWith("video/");
+
                               return (
-                                <div key={p.id} className="relative overflow-hidden rounded-2xl border bg-gray-100">
+                                <div
+                                  key={p.id}
+                                  className="relative overflow-hidden rounded-2xl border bg-gray-100"
+                                >
                                   <button
                                     type="button"
                                     onClick={() => removeAttachment(p.id)}
@@ -1410,7 +1656,9 @@ export default function AgentDashboard({ user }) {
                           </div>
                         ) : null}
 
-                        {postError ? <div className="mt-2 text-sm text-red-600">{postError}</div> : null}
+                        {postError ? (
+                          <div className="mt-2 text-sm text-red-600">{postError}</div>
+                        ) : null}
 
                         <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                           <Button
@@ -1430,7 +1678,8 @@ export default function AgentDashboard({ user }) {
                           >
                             {posting ? (
                               <span className="inline-flex items-center">
-                                <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Posting
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                Posting
                               </span>
                             ) : (
                               "Post"
@@ -1450,7 +1699,9 @@ export default function AgentDashboard({ user }) {
 
               <div className="space-y-4">
                 {communityLoading ? (
-                  <div className="rounded-2xl border bg-white p-6 text-sm text-gray-500">Loading posts…</div>
+                  <div className="rounded-2xl border bg-white p-6 text-sm text-gray-500">
+                    Loading posts…
+                  </div>
                 ) : communityPosts.length === 0 ? (
                   <div className="rounded-2xl border bg-white p-6 text-sm text-gray-500">
                     No posts yet. Be the first to post an update.
@@ -1461,7 +1712,7 @@ export default function AgentDashboard({ user }) {
                       key={p.id}
                       post={p}
                       currentUserId={userId}
-                      me={user}
+                      me={effectiveUser}
                       subscriptionModeEnabled={subscriptionModeEnabled}
                       authorCountryByUid={authorCountryByUid}
                     />
@@ -1473,33 +1724,45 @@ export default function AgentDashboard({ user }) {
             <div className="hidden lg:block lg:col-span-3">
               <div className="sticky top-4 space-y-4">
                 <div className="rounded-2xl border bg-white p-4">
-                  <div className="text-sm font-semibold text-gray-900 mb-3">{tr("highlights", "Highlights")}</div>
+                  <div className="text-sm font-semibold text-gray-900 mb-3">
+                    {tr("highlights", "Highlights")}
+                  </div>
+
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-2xl border bg-gray-50 p-3">
-                      <div className="text-xs text-gray-500">{tr("students", "Students")}</div>
-                      <div className="text-lg font-bold text-blue-600">{stats.totalStudents}</div>
+                      <div className="text-xs text-gray-500">
+                        {tr("students", "Students")}
+                      </div>
+                      <div className="text-lg font-bold text-blue-600">
+                        {stats.totalStudents}
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="rounded-2xl border bg-white p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-semibold text-gray-900">{tr("contacts", "Contacts")}</div>
+                    <div className="text-sm font-semibold text-gray-900">
+                      {tr("contacts", "Contacts")}
+                    </div>
+
                     <Button variant="ghost" size="icon" className="text-gray-500">
                       <MoreHorizontal className="h-5 w-5" />
                     </Button>
                   </div>
 
                   <div className="space-y-2">
-                    {["GreenPass Support", "GAIN Fair Team", "School Rep", "Admissions Desk"].map((n) => (
-                      <div
-                        key={n}
-                        className="flex items-center gap-3 rounded-2xl px-2 py-2 hover:bg-gray-50 transition"
-                      >
-                        <Avatar name={n} size="sm" />
-                        <div className="text-sm text-gray-800">{n}</div>
-                      </div>
-                    ))}
+                    {["GreenPass Support", "GAIN Fair Team", "School Rep", "Admissions Desk"].map(
+                      (n) => (
+                        <div
+                          key={n}
+                          className="flex items-center gap-3 rounded-2xl px-2 py-2 hover:bg-gray-50 transition"
+                        >
+                          <Avatar name={n} size="sm" />
+                          <div className="text-sm text-gray-800">{n}</div>
+                        </div>
+                      )
+                    )}
                   </div>
                 </div>
               </div>
@@ -1529,15 +1792,28 @@ async function ensureMonthlyPostQuota(tx, userRef) {
   const nowKey = monthKeyUTC();
   const data = snap.exists() ? snap.data() : {};
   const storedKey = String(data?.post_quota_month || "");
+
   if (storedKey !== nowKey) {
     tx.set(
       userRef,
-      { post_quota_month: nowKey, post_quota_used: 0, post_quota_updatedAt: serverTimestamp() },
+      {
+        post_quota_month: nowKey,
+        post_quota_used: 0,
+        post_quota_updatedAt: serverTimestamp(),
+      },
       { merge: true }
     );
-    return { used: 0, key: nowKey };
+
+    return {
+      used: 0,
+      key: nowKey,
+    };
   }
-  return { used: Number(data?.post_quota_used || 0), key: storedKey || nowKey };
+
+  return {
+    used: Number(data?.post_quota_used || 0),
+    key: storedKey || nowKey,
+  };
 }
 
 const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
@@ -1551,30 +1827,37 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
   const payerName = me?.full_name || me?.name || "GreenPass User";
   const payerEmail = me?.email || "";
 
-  const handleSuccess = async (_method, transactionId, payload) => {
+  const handleSuccess = async (provider, transactionId, payload) => {
     if (!postId) return;
+
     setProcessing(true);
     setErr("");
+
     try {
-      const until = Timestamp.fromDate(new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000));
+      const until = Timestamp.fromDate(
+        new Date(Date.now() + plan.days * 24 * 60 * 60 * 1000)
+      );
+
       await updateDoc(doc(db, "posts", postId), {
         boosted: true,
         boost_days: plan.days,
         boost_price_usd: plan.price,
         boost_currency: "USD",
         boost_transaction_id: String(transactionId || ""),
-        boost_provider: "paypal",
+        boost_provider: String(provider || "paypal"),
         boost_details: payload || null,
         boosted_at: serverTimestamp(),
         boosted_until: until,
       });
+
       setDone(true);
     } catch (e) {
       console.error("boost update post failed:", e);
+
       setErr(
         tr(
           "payment_succeeded_but_failed",
-          "Payment succeeded, but we couldn\'t activate the boost. Please contact support."
+          "Payment succeeded, but we couldn't activate the boost. Please contact support."
         )
       );
     } finally {
@@ -1598,6 +1881,7 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
               {BOOST_PLANS.map((p) => {
                 const selected = plan?.days === p.days;
+
                 return (
                   <Button
                     key={p.days}
@@ -1633,7 +1917,10 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me }) => {
           </>
         ) : (
           <div className="mt-4">
-            <div className="text-sm text-emerald-700 font-medium">{tr("boost_activated", "Boost activated ✅")}</div>
+            <div className="text-sm text-emerald-700 font-medium">
+              {tr("boost_activated", "Boost activated ✅")}
+            </div>
+
             <Button type="button" className="w-full mt-3" onClick={() => onOpenChange(false)}>
               Close
             </Button>

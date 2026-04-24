@@ -369,7 +369,7 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me, tr }) => {
   const payerName = me?.full_name || me?.name || "GreenPass User";
   const payerEmail = me?.email || "";
 
-  const handleSuccess = async (_method, transactionId, payload) => {
+  const handleSuccess = async (provider, transactionId, payload) => {
     if (!postId) return;
     setProcessing(true);
     setErr("");
@@ -381,7 +381,7 @@ const BoostPostDialog = ({ open, onOpenChange, postId, me, tr }) => {
         boost_price_usd: plan.price,
         boost_currency: "USD",
         boost_transaction_id: String(transactionId || ""),
-        boost_provider: "paypal",
+        boost_provider: String(provider || "paypal"),
         boost_details: payload || null,
         boosted_at: serverTimestamp(),
         boosted_until: until,
@@ -857,7 +857,50 @@ const RealPostCard = ({ post, currentUserId, me, subscriptionModeEnabled, tr, au
 };
 
 export default function TutorDashboard({ user }) {
-  const userId = user?.id || user?.uid || user?.user_id;
+  // ✅ IMPORTANT FIX:
+  // Prioritize Firebase Auth UID first because Firestore users/{uid}
+  // should use the Firebase Auth UID as the document ID.
+  const initialUserId = user?.uid || user?.user_id || user?.id;
+
+  const [liveUser, setLiveUser] = useState(user);
+
+  const userId = liveUser?.uid || liveUser?.user_id || liveUser?.id || initialUserId;
+
+  useEffect(() => {
+    const uid = initialUserId;
+
+    if (!uid) {
+      setLiveUser(user);
+      return;
+    }
+
+    const unsub = onSnapshot(
+      doc(db, "users", uid),
+      (snap) => {
+        if (!snap.exists()) {
+          setLiveUser(user);
+          return;
+        }
+
+        const data = snap.data() || {};
+
+        setLiveUser({
+          id: snap.id,
+          uid: snap.id,
+          user_id: snap.id,
+          ...data,
+        });
+      },
+      (err) => {
+        console.error("TutorDashboard user subscription listener error:", err);
+        setLiveUser(user);
+      }
+    );
+
+    return () => unsub();
+  }, [initialUserId, user]);
+
+  const effectiveUser = liveUser || user;
 
   const [stats, setStats] = useState({
     totalSessions: 0,
@@ -938,7 +981,7 @@ export default function TutorDashboard({ user }) {
     return () => { alive = false; };
   }, [communityPosts, authorCountryByUid]);
 
-  const isSubscribed = useMemo(() => isSubscribedUser(user), [user]);
+  const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
   const { subscriptionModeEnabled } = useSubscriptionMode();
   const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
 
@@ -1142,7 +1185,7 @@ export default function TutorDashboard({ user }) {
     setPostError("");
 
     try {
-      const authorName = user?.full_name || "Tutor";
+      const authorName = effectiveUser?.full_name || "Tutor";
       const canEnforceLimit = subscriptionModeEnabled === true;
       const isUnlimited = isSubscribed === true;
 
@@ -1237,7 +1280,7 @@ export default function TutorDashboard({ user }) {
       <CreateEventDialog
         open={createEventOpen}
         onOpenChange={setCreateEventOpen}
-        user={user}
+        user={effectiveUser}
         role="tutor"
         allowedPlatforms={["nasio"]}
         disabledReason={!canCreateEvent ? tr("subscription_required","Subscription required to create events") : null}
@@ -1248,7 +1291,7 @@ export default function TutorDashboard({ user }) {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-gray-900">
-                {tr("welcome_name","Welcome, {{name}}",{ name: (user?.full_name || "Tutor") })}
+                {tr("welcome_name","Welcome, {{name}}",{ name: (effectiveUser?.full_name || "Tutor") })}
               </h1>
               <p className="text-sm text-gray-600">{tr("subtitle","Tutor dashboard")}</p>
             </div>
@@ -1268,7 +1311,7 @@ export default function TutorDashboard({ user }) {
           </div>
 
           {subscriptionModeEnabled === true && !isSubscribed && (
-            <SubscribeBanner to={subscribeUrl} user={user} tr={tr} />
+            <SubscribeBanner to={subscribeUrl} user={effectiveUser} tr={tr} />
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 xl:gap-10">
@@ -1306,10 +1349,10 @@ export default function TutorDashboard({ user }) {
               <div className="rounded-2xl border bg-white">
                 <div className="p-3 flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3 w-full">
-                    <Avatar name={user?.full_name || "Tutor"} />
+                    <Avatar name={effectiveUser?.full_name || "Tutor"} />
                     <div className="w-full">
                       <div className="text-sm font-semibold text-gray-900">
-                        {tr("composer_title","Share an update, {{name}}?",{ name: (user?.full_name || "Tutor") })}
+                        {tr("composer_title","Share an update, {{name}}?",{ name: (effectiveUser?.full_name || "Tutor") })}
                       </div>
 
                       <textarea
@@ -1453,7 +1496,7 @@ export default function TutorDashboard({ user }) {
                           key={p.id}
                           post={p}
                           currentUserId={userId}
-                          me={user}
+                          me={effectiveUser}
                           subscriptionModeEnabled={subscriptionModeEnabled}
                           tr={tr}
                           authorCountryByUid={authorCountryByUid}

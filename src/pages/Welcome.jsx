@@ -198,6 +198,14 @@ function clearStoredReferralContext() {
 
 function normalizeRole(r) {
   const v = (r || "").toString().trim().toLowerCase();
+
+  // GreenPass role standard:
+  // role = active/current role source of truth.
+  // user = student/general user in the app.
+  if (v === "student") return "user";
+  if (v === "institution") return "school";
+  if (v === "provider") return "vendor";
+
   return VALID_ROLES.includes(v) ? v : DEFAULT_ROLE;
 }
 
@@ -224,9 +232,12 @@ function buildUserDoc({
   referredByTutorId = "",
   tutorStudentStatus = "",
 }) {
+  const finalRole = normalizeRole(role);
+  const finalSignupEntryRole = normalizeRole(signupEntryRole || finalRole);
+
   return {
-    role,
-    signup_entry_role: signupEntryRole,
+    role: finalRole,
+    signup_entry_role: finalSignupEntryRole,
     email,
     full_name,
     phone: "",
@@ -572,12 +583,7 @@ async function routeAfterSignIn(
   if (!profile?.onboarding_completed) {
     const roleToUse = isCollaboratorInvite
       ? "collaborator"
-      : normalizeRole(
-          profile?.role ||
-            profile?.user_type ||
-            roleHint ||
-            DEFAULT_ROLE
-        );
+      : normalizeRole(profile?.role || roleHint || DEFAULT_ROLE);
 
     return navigate(
       buildOnboardingUrl({
