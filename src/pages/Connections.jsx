@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { auth, db } from "@/firebase";
+import { createPageUrl } from "@/utils";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 import {
   collection,
   deleteDoc,
@@ -18,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
-import { Paperclip } from "lucide-react";
+import { CreditCard, Lock, Paperclip } from "lucide-react";
 
 import { useTr } from "@/i18n/useTr";
 import {
@@ -58,6 +60,71 @@ function resolveRole(userDoc) {
   );
 }
 
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set([
+  "active",
+  "trialing",
+  "paid",
+  "subscribed",
+]);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set([
+  "",
+  "none",
+  "skipped",
+  "inactive",
+  "incomplete",
+  "incomplete_expired",
+  "past_due",
+  "unpaid",
+  "canceled",
+  "cancelled",
+  "expired",
+]);
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+
+  const status = String(
+    userDoc?.subscription_status || userDoc?.subscriptionStatus || ""
+  )
+    .toLowerCase()
+    .trim();
+
+  if (userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) {
+    return !INACTIVE_SUBSCRIPTION_STATUSES.has(status);
+  }
+
+  return ACTIVE_SUBSCRIPTION_STATUSES.has(status);
+}
+
+function isSubscriptionLocked(userDoc, subscriptionModeEnabled) {
+  if (!subscriptionModeEnabled) return false;
+
+  const role = resolveRole(userDoc);
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(role)) return false;
+
+  return !hasActiveSubscription(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, fallbackPath = "/connections") {
+  const rawRole = resolveRole(userDoc);
+  const role = SUBSCRIPTION_REQUIRED_ROLES.has(rawRole) ? rawRole : "agent";
+  const existingPlan = String(
+    userDoc?.subscription_plan || userDoc?.subscriptionPlan || ""
+  ).trim();
+  const plan = existingPlan || `${role}_monthly`;
+
+  const query = new URLSearchParams({
+    type: "subscription",
+    role,
+    plan,
+    lock: "1",
+    returnTo: fallbackPath || "/connections",
+  });
+
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 async function fetchUsersByIds(ids) {
   const unique = Array.from(new Set((ids || []).filter(Boolean)));
   if (!unique.length) return {};
@@ -81,6 +148,7 @@ export default function Connections() {
   const { tr } = useTr("connections_page");
   const navigate = useNavigate();
   const qp = useQueryParams();
+  const { subscriptionModeEnabled } = useSubscriptionMode();
 
   const me = auth?.currentUser;
   const myUid = me?.uid;
@@ -94,6 +162,7 @@ export default function Connections() {
 
   const [roleFilter, setRoleFilter] = useState("all");
   const [myRole, setMyRole] = useState("user");
+  const [meDoc, setMeDoc] = useState(null);
 
   const [requests, setRequests] = useState([]);
   const [followers, setFollowers] = useState([]);
@@ -187,9 +256,12 @@ export default function Connections() {
     let cancelled = false;
     (async () => {
       try {
-        const meDoc = await getUserDoc(myUid);
-        const r = resolveRole(meDoc);
-        if (!cancelled) setMyRole(r);
+        const docu = await getUserDoc(myUid);
+        const r = resolveRole(docu);
+        if (!cancelled) {
+          setMeDoc(docu || null);
+          setMyRole(r);
+        }
       } catch (e) {
         console.error("failed to load my role", e);
       }
@@ -205,6 +277,20 @@ export default function Connections() {
       setRoleFilter("all");
     }
   }, [myRole, roleFilter]);
+
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLocked(meDoc, subscriptionModeEnabled),
+    [meDoc, subscriptionModeEnabled]
+  );
+
+  const subscriptionCheckoutUrl = useMemo(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    return buildSubscriptionCheckoutUrl(meDoc, currentPath);
+  }, [meDoc]);
+
+  const goToSubscription = () => {
+    navigate(subscriptionCheckoutUrl);
+  };
 
   const filteredList = useMemo(() => {
     const base = tab === "followers" ? followers : tab === "following" ? following : requests;
@@ -263,6 +349,13 @@ export default function Connections() {
   const canMassMessage = tab === "followers" || tab === "following";
 
   const onPickMassFiles = (e) => {
+    if (subscriptionLocked) {
+      try {
+        e.target.value = "";
+      } catch {}
+      return;
+    }
+
     const list = Array.from(e?.target?.files || []);
     if (!list.length) return;
 
@@ -306,6 +399,15 @@ export default function Connections() {
 
   const sendMass = async () => {
     if (!myUid) return;
+    if (subscriptionLocked) {
+      alert(
+        tr(
+          "subscription_required_mass_message",
+          "Mass messaging is locked. Activate your subscription to continue."
+        )
+      );
+      return;
+    }
     const text = String(massText || "").trim();
     const files = Array.isArray(massFiles) ? massFiles : [];
     if (!text && files.length === 0) return;
@@ -440,6 +542,31 @@ export default function Connections() {
             </Button>
           </div>
 
+          {subscriptionLocked ? (
+            <Card className="mb-4 rounded-2xl border-amber-200 bg-amber-50">
+              <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3 text-amber-900">
+                  <Lock className="h-5 w-5 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="font-semibold">
+                      {tr("subscription_required", "Subscription required")}
+                    </div>
+                    <div className="text-sm text-amber-800 mt-1">
+                      {tr(
+                        "subscription_required_desc",
+                        "You can view your connections, but mass messaging is locked until your subscription is active."
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <Button onClick={goToSubscription} className="shrink-0">
+                  <CreditCard className="h-4 w-4 mr-2" />
+                  {tr("go_to_payment", "Go to Payment")}
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card className="rounded-2xl">
             <CardContent className="p-4">
               <Tabs value={tab} onValueChange={setTab}>
@@ -568,8 +695,13 @@ export default function Connections() {
                       <Textarea
                         value={massText}
                         onChange={(e) => setMassText(e.target.value)}
-                        placeholder={tr("type_message", "Type your message...")}
+                        placeholder={
+                          subscriptionLocked
+                            ? tr("subscription_required", "Subscription required")
+                            : tr("type_message", "Type your message...")
+                        }
                         className="rounded-xl"
+                        disabled={subscriptionLocked}
                       />
                       <input
                         ref={followersFileInputRef}
@@ -591,6 +723,7 @@ export default function Connections() {
                                 type="button"
                                 className="text-gray-500 hover:text-gray-900"
                                 onClick={() => removeMassFile(idx)}
+                                disabled={subscriptionLocked}
                                 aria-label={tr("remove", "Remove")}
                                 title={tr("remove", "Remove")}
                               >
@@ -609,11 +742,13 @@ export default function Connections() {
                           className="mr-2"
                           onClick={() => followersFileInputRef.current?.click()}
                           title={tr("attach_file", "Attach file")}
+                          disabled={subscriptionLocked}
                         >
                           <Paperclip className="h-5 w-5" />
                         </Button>
                         <Button
                           disabled={
+                            subscriptionLocked ||
                             sending ||
                             selectedIds.size === 0 ||
                             (!String(massText).trim() && (massFiles?.length || 0) === 0)
@@ -665,8 +800,13 @@ export default function Connections() {
                       <Textarea
                         value={massText}
                         onChange={(e) => setMassText(e.target.value)}
-                        placeholder={tr("type_message", "Type your message...")}
+                        placeholder={
+                          subscriptionLocked
+                            ? tr("subscription_required", "Subscription required")
+                            : tr("type_message", "Type your message...")
+                        }
                         className="rounded-xl"
+                        disabled={subscriptionLocked}
                       />
                       <input
                         ref={followingFileInputRef}
@@ -688,6 +828,7 @@ export default function Connections() {
                                 type="button"
                                 className="text-gray-500 hover:text-gray-900"
                                 onClick={() => removeMassFile(idx)}
+                                disabled={subscriptionLocked}
                                 aria-label={tr("remove", "Remove")}
                                 title={tr("remove", "Remove")}
                               >
@@ -706,11 +847,13 @@ export default function Connections() {
                           className="mr-2"
                           onClick={() => followingFileInputRef.current?.click()}
                           title={tr("attach_file", "Attach file")}
+                          disabled={subscriptionLocked}
                         >
                           <Paperclip className="h-5 w-5" />
                         </Button>
                         <Button
                           disabled={
+                            subscriptionLocked ||
                             sending ||
                             selectedIds.size === 0 ||
                             (!String(massText).trim() && (massFiles?.length || 0) === 0)

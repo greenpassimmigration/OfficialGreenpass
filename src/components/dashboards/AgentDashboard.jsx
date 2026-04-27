@@ -1313,8 +1313,7 @@ export default function AgentDashboard({ user }) {
 
   const { subscriptionModeEnabled } = useSubscriptionMode();
 
-  const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
-
+  const subscribeUrl = `${createPageUrl("Checkout")}?type=subscription&role=agent&plan=agent_monthly&returnTo=${encodeURIComponent(createPageUrl("Dashboard"))}`;
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 

@@ -1,5 +1,6 @@
 // src/pages/AgentLeads.jsx
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { db, auth } from "@/firebase";
 import {
   collection,
@@ -14,9 +15,11 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Users, Search, Phone, Mail, MessageCircle, TrendingUp, Loader2 } from "lucide-react";
+import { Users, Search, Phone, Mail, MessageCircle, TrendingUp, Loader2, Lock, CreditCard } from "lucide-react";
 import { format } from "date-fns";
 import { useTranslation } from "react-i18next";
+import { createPageUrl } from "@/utils";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 
 const toJsDate = (v) => {
   if (!v) return null;
@@ -53,8 +56,59 @@ const StatusBadge = ({ status, tr }) => {
   );
 };
 
+
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "paid", "subscribed"]);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set(["", "none", "skipped", "inactive", "incomplete", "incomplete_expired", "past_due", "unpaid", "canceled", "cancelled", "expired"]);
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase().trim();
+  if (!role || role === "user" || role === "member" || role === "students") return "student";
+  if (role === "agents") return "agent";
+  if (role === "schools") return "school";
+  if (role === "tutors") return "tutor";
+  return role;
+}
+
+function resolveUserRole(userDoc, fallback = "student") {
+  return normalizeRole(userDoc?.role || userDoc?.selected_role || userDoc?.user_type || userDoc?.userType || userDoc?.signup_entry_role || fallback);
+}
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+  const status = String(userDoc?.subscription_status || userDoc?.subscriptionStatus || "").toLowerCase().trim();
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  if ((userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) && !INACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  return false;
+}
+
+function isSubscriptionLockedForRole(userDoc, subscriptionModeEnabled, expectedRole) {
+  if (!subscriptionModeEnabled) return false;
+  const role = resolveUserRole(userDoc, expectedRole);
+  const finalRole = SUBSCRIPTION_REQUIRED_ROLES.has(role) ? role : expectedRole;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(finalRole)) return false;
+  return !hasActiveSubscription(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, expectedRole, fallbackPath) {
+  const roleFromDoc = resolveUserRole(userDoc, expectedRole);
+  const role = SUBSCRIPTION_REQUIRED_ROLES.has(roleFromDoc) ? roleFromDoc : expectedRole;
+  const existingPlan = String(userDoc?.subscription_plan || userDoc?.subscriptionPlan || "").trim();
+  const plan = existingPlan || `${role}_monthly`;
+  const query = new URLSearchParams({
+    type: "subscription",
+    role,
+    plan,
+    lock: "1",
+    returnTo: fallbackPath || window.location.pathname || "/dashboard",
+  });
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 export default function AgentLeads() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { subscriptionModeEnabled } = useSubscriptionMode();
   const tr = useCallback(
     (key, def, vars = undefined) => t(key, { defaultValue: def, ...(vars || {}) }),
     [t]
@@ -63,6 +117,7 @@ export default function AgentLeads() {
   const [leads, setLeads] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
+  const [meDoc, setMeDoc] = useState(null);
 
   useEffect(() => {
     const uid = auth.currentUser?.uid;
@@ -117,6 +172,18 @@ export default function AgentLeads() {
     };
   }, [leads]);
 
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLockedForRole(meDoc, subscriptionModeEnabled, "agent"),
+    [meDoc, subscriptionModeEnabled]
+  );
+
+  const subscriptionCheckoutUrl = useMemo(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    return buildSubscriptionCheckoutUrl(meDoc, "agent", currentPath);
+  }, [meDoc]);
+
+  const goToSubscription = () => navigate(subscriptionCheckoutUrl);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-emerald-50">
@@ -134,6 +201,26 @@ export default function AgentLeads() {
             {tr("agent_leads.title", "Leads & Pipeline")}
           </h1>
         </div>
+
+        {subscriptionLocked ? (
+          <Card className="mb-6 rounded-2xl border-amber-200 bg-amber-50">
+            <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3 text-amber-900">
+                <Lock className="h-5 w-5 mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-semibold">Subscription required</div>
+                  <div className="text-sm text-amber-800 mt-1">
+                    Subscription mode is enabled. Activate your agent subscription to access lead contact actions and messaging.
+                  </div>
+                </div>
+              </div>
+              <Button onClick={goToSubscription} className="shrink-0">
+                <CreditCard className="h-4 w-4 mr-2" />
+                Go to Payment
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
 
         <div className="grid md:grid-cols-4 gap-6 mb-8">
           <Card>
@@ -271,6 +358,12 @@ export default function AgentLeads() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          disabled={subscriptionLocked}
+                          onClick={() => {
+                            if (subscriptionLocked) return;
+                            const targetId = lead.student_id || lead.user_id || lead.client_id || "";
+                            if (targetId) navigate(`${createPageUrl("Messages")}?to=${encodeURIComponent(targetId)}`);
+                          }}
                           title={tr("agent_leads.actions.message", "Message")}
                           aria-label={tr("agent_leads.actions.message", "Message")}
                         >

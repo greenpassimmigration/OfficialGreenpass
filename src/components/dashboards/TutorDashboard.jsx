@@ -983,7 +983,7 @@ export default function TutorDashboard({ user }) {
 
   const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
   const { subscriptionModeEnabled } = useSubscriptionMode();
-  const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
+  const subscribeUrl = useMemo(() => createPageUrl("/checkout?type=subscription&role=tutor&plan=tutor_monthly"), []);
 
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const canCreateEvent = !subscriptionModeEnabled || isSubscribed;

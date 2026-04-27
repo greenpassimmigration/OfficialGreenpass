@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   addDays,
   addMonths,
@@ -47,6 +48,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { auth, db } from "@/firebase";
+import { createPageUrl } from "@/utils";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -754,6 +757,49 @@ function DateActionDialog({
   );
 }
 
+
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "paid", "subscribed"]);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set(["", "none", "skipped", "inactive", "incomplete", "incomplete_expired", "past_due", "unpaid", "canceled", "cancelled", "expired"]);
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase().trim();
+  if (!role || role === "user" || role === "member" || role === "students") return "student";
+  if (role === "agents") return "agent";
+  if (role === "schools") return "school";
+  if (role === "tutors") return "tutor";
+  return role;
+}
+
+function resolveUserRole(userDoc, fallback = "student") {
+  return normalizeRole(userDoc?.role || userDoc?.selected_role || userDoc?.user_type || userDoc?.userType || userDoc?.signup_entry_role || fallback);
+}
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+  const status = String(userDoc?.subscription_status || userDoc?.subscriptionStatus || "").toLowerCase().trim();
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  if ((userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) && !INACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  return false;
+}
+
+function isSubscriptionLockedForRole(userDoc, subscriptionModeEnabled, expectedRole) {
+  if (!subscriptionModeEnabled) return false;
+  const role = resolveUserRole(userDoc, expectedRole);
+  const finalRole = SUBSCRIPTION_REQUIRED_ROLES.has(role) ? role : expectedRole;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(finalRole)) return false;
+  return !hasActiveSubscription(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, expectedRole, fallbackPath) {
+  const roleFromDoc = resolveUserRole(userDoc, expectedRole);
+  const role = SUBSCRIPTION_REQUIRED_ROLES.has(roleFromDoc) ? roleFromDoc : expectedRole;
+  const existingPlan = String(userDoc?.subscription_plan || userDoc?.subscriptionPlan || "").trim();
+  const plan = existingPlan || `${role}_monthly`;
+  const query = new URLSearchParams({ type: "subscription", role, plan, lock: "1", returnTo: fallbackPath || window.location.pathname || "/dashboard" });
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 export default function TutorPlanner() {
   const { tr } = useTr();
   const currentUser = auth.currentUser;
@@ -776,6 +822,8 @@ export default function TutorPlanner() {
   const [noteOpen, setNoteOpen] = useState(false);
   const [createSessionOpen, setCreateSessionOpen] = useState(false);
   const [dateActionOpen, setDateActionOpen] = useState(false);
+  const [meDoc, setMeDoc] = useState(null);
+  const [errorText, setErrorText] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -909,6 +957,24 @@ export default function TutorPlanner() {
     }, 0);
   }, [availability]);
 
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLockedForRole(meDoc, subscriptionModeEnabled, "tutor"),
+    [meDoc, subscriptionModeEnabled]
+  );
+
+  const subscriptionCheckoutUrl = useMemo(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    return buildSubscriptionCheckoutUrl(meDoc, "tutor", currentPath);
+  }, [meDoc]);
+
+  const goToSubscription = () => navigate(subscriptionCheckoutUrl);
+
+  const requireSubscription = (message = "Tutor Planner is locked. Activate your tutor subscription to continue.") => {
+    if (!subscriptionLocked) return false;
+    setErrorText(message);
+    return true;
+  };
+
   const handlePrev = () => {
     if (view === "month") setCurrentDate((d) => subMonths(d, 1));
     else setCurrentDate((d) => subWeeks(d, 1));
@@ -920,12 +986,14 @@ export default function TutorPlanner() {
   };
 
   const handleDateClick = (date) => {
+    if (requireSubscription("Calendar actions are locked. Activate your tutor subscription to manage planner items.")) return;
     setSelectedDate(date);
     setCurrentDate(date);
     setDateActionOpen(true);
   };
 
   const handleSaveAvailability = async (payload) => {
+    if (requireSubscription("Availability settings are locked. Activate your tutor subscription to save changes.")) return;
     if (!currentUser?.uid) return;
 
     const ref = doc(db, "tutor_availability", currentUser.uid);
@@ -945,6 +1013,7 @@ export default function TutorPlanner() {
   };
 
   const handleSaveBlockedTime = async (payload) => {
+    if (requireSubscription("Blocked time is locked. Activate your tutor subscription to save changes.")) return;
     if (!currentUser?.uid) return;
 
     await addDoc(collection(db, "tutor_blocked_times"), {
@@ -966,6 +1035,7 @@ export default function TutorPlanner() {
   };
 
   const handleSaveNote = async (payload) => {
+    if (requireSubscription("Planner notes are locked. Activate your tutor subscription to save notes.")) return;
     if (!currentUser?.uid) return;
 
     await addDoc(collection(db, "tutor_planner_notes"), {
@@ -987,6 +1057,7 @@ export default function TutorPlanner() {
   };
 
   const handleSaveSession = async (payload) => {
+    if (requireSubscription("Session creation is locked. Activate your tutor subscription to create sessions.")) return;
     if (!currentUser?.uid) return;
 
     await addDoc(collection(db, "tutoring_sessions"), {
@@ -1013,14 +1084,17 @@ export default function TutorPlanner() {
   };
 
   const handleOpenNoteForDate = () => {
+    if (requireSubscription()) return;
     setNoteOpen(true);
   };
 
   const handleOpenBlockForDate = () => {
+    if (requireSubscription()) return;
     setBlockTimeOpen(true);
   };
 
   const handleOpenCreateSessionForDate = () => {
+    if (requireSubscription()) return;
     setCreateSessionOpen(true);
   };
 
@@ -1249,6 +1323,29 @@ export default function TutorPlanner() {
           </Button>
         </div>
       </div>
+
+      {errorText ? (
+        <Card className="rounded-2xl border-red-200 bg-red-50">
+          <CardContent className="p-4 text-sm text-red-800">{errorText}</CardContent>
+        </Card>
+      ) : null}
+
+      {subscriptionLocked ? (
+        <Card className="rounded-2xl border-amber-200 bg-amber-50">
+          <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3 text-amber-900">
+              <Lock className="h-5 w-5 mt-0.5 shrink-0" />
+              <div>
+                <div className="font-semibold">Subscription required</div>
+                <div className="text-sm text-amber-800 mt-1">
+                  Subscription mode is enabled. Activate your tutor subscription to manage availability, blocked time, notes, and sessions.
+                </div>
+              </div>
+            </div>
+            <Button type="button" onClick={goToSubscription} className="shrink-0">Go to Payment</Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
         <SummaryCard

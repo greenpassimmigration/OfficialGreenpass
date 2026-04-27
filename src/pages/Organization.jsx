@@ -19,6 +19,7 @@ import {
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/firebase";
 import { createPageUrl } from "@/utils";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +63,86 @@ function normalizeIncomingRoleParam(r) {
   if (role === "user") return "student";
   return role;
 }
+
+const SUBSCRIPTION_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "paid", "subscribed"]);
+const LOCKED_SUBSCRIPTION_STATUSES = new Set([
+  "none",
+  "skipped",
+  "inactive",
+  "incomplete",
+  "incomplete_expired",
+  "past_due",
+  "unpaid",
+  "canceled",
+  "cancelled",
+  "expired",
+]);
+
+function resolveAccountRole(userDoc) {
+  const role = String(
+    userDoc?.role ||
+      userDoc?.selected_role ||
+      userDoc?.user_type ||
+      userDoc?.userType ||
+      userDoc?.account_type ||
+      "student"
+  )
+    .toLowerCase()
+    .trim();
+
+  if (!role || role === "user" || role === "member") return "student";
+  return role;
+}
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+
+  if (userDoc.subscription_active === true || userDoc.subscriptionActive === true) {
+    return true;
+  }
+
+  const status = String(userDoc.subscription_status || userDoc.subscriptionStatus || "")
+    .toLowerCase()
+    .trim();
+
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  if (LOCKED_SUBSCRIPTION_STATUSES.has(status)) return false;
+
+  return false;
+}
+
+function isSubscriptionLockedForUser(userDoc, subscriptionModeEnabled) {
+  if (!subscriptionModeEnabled) return false;
+
+  const role = resolveAccountRole(userDoc);
+  if (!SUBSCRIPTION_ROLES.has(role)) return false;
+
+  return !hasActiveSubscription(userDoc);
+}
+
+function getSubscriptionPaymentUrl(userDoc) {
+  const rawRole = resolveAccountRole(userDoc);
+  const role = SUBSCRIPTION_ROLES.has(rawRole) ? rawRole : "school";
+  const existingPlan = String(
+    userDoc?.subscription_plan ||
+      userDoc?.subscriptionPlan ||
+      ""
+  ).trim();
+
+  const plan = existingPlan || `${role}_monthly`;
+
+  const query = new URLSearchParams({
+    type: "subscription",
+    role,
+    plan,
+    lock: "1",
+    next: "/organization",
+  });
+
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 
 function ProgressBar({ value = 0 }) {
   const pct = clamp(value, 0, 100);
@@ -129,9 +210,11 @@ async function postAuthed(path, body) {
 export default function Organization() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { subscriptionModeEnabled } = useSubscriptionMode();
 
   const [fbUser, setFbUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
+  const [meDoc, setMeDoc] = useState(null);
 
   const [org, setOrg] = useState(null);
   const [members, setMembers] = useState([]);
@@ -166,10 +249,15 @@ export default function Organization() {
     try {
       const usnap = await getDoc(doc(db, "users", uid));
       if (usnap.exists()) {
-        const ud = usnap.data() || {};
+        const ud = { id: usnap.id, ...(usnap.data() || {}) };
+        setMeDoc(ud);
         orgIdFromProfile = ud.orgId || ud.organizationId || ud.org_id || ud.organization_id || "";
+      } else {
+        setMeDoc(null);
       }
-    } catch {}
+    } catch {
+      setMeDoc(null);
+    }
 
     let orgDoc = null;
 
@@ -214,6 +302,7 @@ export default function Organization() {
       if (!authReady) return;
 
       if (!fbUser?.uid) {
+        setMeDoc(null);
         setOrg(null);
         setMembers([]);
         setInvites([]);
@@ -243,10 +332,27 @@ export default function Organization() {
   const remainingSlots = useMemo(() => Math.max(0, totalSlots - usedSlots), [totalSlots, usedSlots]);
   const usedPct = useMemo(() => (!totalSlots ? 0 : Math.round((usedSlots / totalSlots) * 100)), [usedSlots, totalSlots]);
 
-  const canCreateOrg = useMemo(() => !!fbUser?.uid && !org && !loading && !creating, [fbUser?.uid, org, loading, creating]);
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLockedForUser(meDoc, subscriptionModeEnabled),
+    [meDoc, subscriptionModeEnabled]
+  );
+  const subscriptionPaymentUrl = useMemo(() => getSubscriptionPaymentUrl(meDoc), [meDoc]);
+
+  const canCreateOrg = useMemo(
+    () => !!fbUser?.uid && !org && !loading && !creating && !subscriptionLocked,
+    [fbUser?.uid, org, loading, creating, subscriptionLocked]
+  );
+
+  const goToSubscriptionPayment = () => {
+    navigate(subscriptionPaymentUrl);
+  };
 
   const handleCreateOrg = async () => {
     if (!fbUser?.uid) return;
+    if (subscriptionLocked) {
+      setError(t("organization_page.subscription_required", "Your subscription is inactive or pending. Activate your subscription to use organization features."));
+      return;
+    }
     const name = (orgName || "").trim();
     if (!name) {
       setError(t("organization_page.err_org_name_required", "Please enter an organization name."));
@@ -292,6 +398,10 @@ export default function Organization() {
   };
 
   const openInvite = () => {
+    if (subscriptionLocked) {
+      setInviteActionMsg(t("organization_page.subscription_required", "Your subscription is inactive or pending. Activate your subscription to use organization features."));
+      return;
+    }
     setInviteEmail("");
     setInviteRole("member");
     setInviteErr("");
@@ -300,6 +410,10 @@ export default function Organization() {
 
   const sendInvite = async () => {
     if (!org?.id) return;
+    if (subscriptionLocked) {
+      setInviteErr(t("organization_page.subscription_required", "Your subscription is inactive or pending. Activate your subscription to use organization features."));
+      return;
+    }
     const email = (inviteEmail || "").trim().toLowerCase();
     if (!email || !email.includes("@")) {
       setInviteErr("Please enter a valid email.");
@@ -335,6 +449,10 @@ export default function Organization() {
 
   const resendInvite = async (inv) => {
     try {
+      if (subscriptionLocked) {
+        setInviteActionMsg(t("organization_page.subscription_required", "Your subscription is inactive or pending. Activate your subscription to use organization features."));
+        return;
+      }
       const status = String(inv?.status || "pending").toLowerCase();
       if (status !== "pending") {
         setInviteActionMsg("This invitation is already accepted (or no longer pending).");
@@ -363,6 +481,10 @@ export default function Organization() {
   };
 
   const handleMessageMember = (member) => {
+    if (subscriptionLocked) {
+      setInviteActionMsg(t("organization_page.subscription_required", "Your subscription is inactive or pending. Activate your subscription to use organization features."));
+      return;
+    }
     const targetId = String(member?.userId || "").trim();
     if (!targetId) return;
     if (targetId === String(fbUser?.uid || "")) return;
@@ -450,6 +572,23 @@ export default function Organization() {
         </div>
 
         <div className="mx-auto w-full max-w-6xl px-4 pb-10 md:px-6">
+          {subscriptionLocked ? (
+            <Card className="mb-4 rounded-3xl border-amber-200 bg-amber-50">
+              <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="font-semibold text-amber-900">{t("organization_page.subscription_locked_title", "Subscription required")}</div>
+                  <div className="text-sm text-amber-800">
+                    {t("organization_page.subscription_locked_desc", "Your subscription is inactive or pending. Activate your subscription to create and manage an organization.")}
+                  </div>
+                </div>
+                <Button onClick={goToSubscriptionPayment} className="rounded-2xl shrink-0">
+                  <CreditCard className="mr-2 h-4 w-4" />
+                  {t("organization_page.go_to_payment", "Go to Payment")}
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <div className="grid gap-4 lg:grid-cols-3">
             <Card className="rounded-3xl overflow-hidden lg:col-span-2">
               <div className="bg-gradient-to-r from-emerald-50 to-white p-6">
@@ -556,6 +695,23 @@ export default function Organization() {
   return (
     <div className="px-4 py-6 md:px-6">
       <div className="mx-auto max-w-6xl space-y-4">
+        {subscriptionLocked ? (
+          <Card className="rounded-3xl border-amber-200 bg-amber-50">
+            <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="font-semibold text-amber-900">{t("organization_page.subscription_locked_title", "Subscription required")}</div>
+                <div className="text-sm text-amber-800">
+                  {t("organization_page.subscription_locked_desc_existing", "Your subscription is inactive or pending. Viewing is allowed, but organization actions are locked until payment is active.")}
+                </div>
+              </div>
+              <Button onClick={goToSubscriptionPayment} className="rounded-2xl shrink-0">
+                <CreditCard className="mr-2 h-4 w-4" />
+                {t("organization_page.go_to_payment", "Go to Payment")}
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
+
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">{t("organization", "Organization")}</h1>
@@ -582,10 +738,22 @@ export default function Organization() {
                 {remainingSlots} slots left
               </Badge>
             )}
-            <Button className="rounded-2xl" variant="outline">
+            <Button
+              className="rounded-2xl"
+              variant="outline"
+              onClick={subscriptionLocked ? goToSubscriptionPayment : undefined}
+              disabled={!subscriptionLocked}
+              title={
+                subscriptionLocked
+                  ? t("organization_page.go_to_payment", "Go to Payment")
+                  : t("organization_page.extra_slots_coming_soon", "Extra seats are coming soon")
+              }
+            >
               <span className="flex items-center gap-2">
                 <CreditCard className="h-4 w-4" />
-                {t("organization_page.buy_more_slots", "Buy more slots")}
+                {subscriptionLocked
+                  ? t("organization_page.go_to_payment", "Go to Payment")
+                  : t("organization_page.buy_more_slots", "Buy more slots")}
               </span>
             </Button>
           </div>
@@ -622,7 +790,7 @@ export default function Organization() {
                   {inviteActionMsg}
                 </div>
               ) : null}
-              <Button className="w-full rounded-2xl" onClick={openInvite}>
+              <Button className="w-full rounded-2xl" onClick={openInvite} disabled={subscriptionLocked}>
                 <span className="flex items-center gap-2">
                   <Mail className="h-4 w-4" />
                   {t("organization_page.invite_by_email", "Invite by email")}
@@ -671,6 +839,7 @@ export default function Organization() {
                               variant="outline"
                               className="rounded-xl"
                               onClick={() => handleMessageMember(m)}
+                              disabled={subscriptionLocked}
                               title={t("organization_page.message_member", "Message member")}
                             >
                               <MessageSquare className="h-4 w-4 mr-1" />
@@ -726,7 +895,7 @@ export default function Organization() {
                               size="sm"
                               variant="outline"
                               className="rounded-xl"
-                              disabled={inviteActionBusyId === inv.id}
+                              disabled={inviteActionBusyId === inv.id || subscriptionLocked}
                               onClick={() => resendInvite(inv)}
                               title={t("organization_page.resend_new_invite", "Resend (new invite)")}
                             >
@@ -755,7 +924,7 @@ export default function Organization() {
       </div>
 
       <OrgInviteDialog
-        open={inviteOpen}
+        open={inviteOpen && !subscriptionLocked}
         onOpenChange={setInviteOpen}
         orgId={org?.id}
         orgName={org?.name}

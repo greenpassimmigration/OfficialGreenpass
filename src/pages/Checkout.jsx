@@ -1,5 +1,5 @@
 // src/pages/Checkout.jsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,9 +29,53 @@ import {
 } from "firebase/firestore";
 
 import SharedPaymentGateway from "../components/payments/SharedPaymentGateway";
+import {
+  getDefaultPlanIdForRole,
+  getPlanById,
+  getPlansForRole,
+} from "@/config/subscriptionPlans";
+
+const PAID_ROLES = ["agent", "school", "tutor"];
+const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "paid", "subscribed"];
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase().trim();
+  if (!role || role === "user" || role === "member") return "student";
+  return role;
+}
+
+function resolveUserRole(userDoc) {
+  return normalizeRole(
+    userDoc?.selected_role ||
+      userDoc?.user_type ||
+      userDoc?.userType ||
+      userDoc?.role ||
+      "student"
+  );
+}
+
+function getReturnPageForRole(role) {
+  switch (normalizeRole(role)) {
+    case "agent":
+      return "AgentDashboard";
+    case "school":
+      return "SchoolDashboard";
+    case "tutor":
+      return "TutorDashboard";
+    default:
+      return "Dashboard";
+  }
+}
+
+function isSubscriptionType(type, mode) {
+  const t = String(type || "").toLowerCase().trim();
+  const m = String(mode || "").toLowerCase().trim();
+  return t === "subscription" || t === "subscribe" || m === "subscription";
+}
 
 export default function Checkout() {
   const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState(false);
   const [error, setError] = useState(null);
   const [pkg, setPkg] = useState(null);
   const [userDoc, setUserDoc] = useState(null);
@@ -40,9 +84,22 @@ export default function Checkout() {
   const navigate = useNavigate();
 
   const urlParams = new URLSearchParams(window.location.search);
-  const packageType = urlParams.get("type");
+  const packageType = urlParams.get("type") || urlParams.get("mode");
+  const requestedRole = normalizeRole(urlParams.get("role"));
+  const requestedPlanId =
+    urlParams.get("plan") ||
+    urlParams.get("planId") ||
+    urlParams.get("subscriptionPlan") ||
+    "";
   const packageId =
     urlParams.get("packageId") || urlParams.get("package") || urlParams.get("id");
+  const returnTo = urlParams.get("returnTo") || urlParams.get("redirect") || "";
+
+  const checkoutMode = isSubscriptionType(packageType, urlParams.get("mode"))
+    ? "subscription"
+    : "payment";
+
+  const isSubscriptionCheckout = checkoutMode === "subscription";
 
   // ---------- helpers ----------
   const getUserDocRef = () => {
@@ -52,6 +109,18 @@ export default function Checkout() {
   };
 
   const safePrice = (v) => Number(v || 0);
+
+  const selectedPlanOptions = useMemo(() => {
+    if (!pkg?.role) return [];
+    return getPlansForRole(pkg.role).filter((p) => p.providerType === "subscription");
+  }, [pkg?.role]);
+
+  const isAlreadySubscribed = useMemo(() => {
+    if (!userDoc) return false;
+    if (userDoc.subscription_active === true) return true;
+    const status = String(userDoc.subscription_status || "").toLowerCase().trim();
+    return ACTIVE_SUBSCRIPTION_STATUSES.includes(status);
+  }, [userDoc]);
 
   // Pull a string-like "client id" from many possible shapes
   const extractClientId = (obj) => {
@@ -95,6 +164,53 @@ export default function Checkout() {
       } catch (_) {}
     }
     return null;
+  };
+
+  const buildSubscriptionPackage = (loadedUserDoc) => {
+    const profileRole = resolveUserRole(loadedUserDoc);
+    const role = PAID_ROLES.includes(requestedRole) ? requestedRole : profileRole;
+
+    if (!PAID_ROLES.includes(role)) {
+      throw new Error(
+        "Subscription checkout is only available for agent, school, and tutor accounts."
+      );
+    }
+
+    const defaultPlanId = getDefaultPlanIdForRole(role);
+    const finalPlanId = requestedPlanId || packageId || defaultPlanId;
+    const plan = getPlanById(finalPlanId);
+
+    if (!plan || plan.providerType !== "subscription") {
+      throw new Error(
+        `Invalid subscription plan: ${finalPlanId || "missing"}. Expected a valid ${role} monthly/yearly plan.`
+      );
+    }
+
+    if (normalizeRole(plan.role) !== role) {
+      throw new Error(
+        `The selected plan (${plan.id}) does not match the requested role (${role}).`
+      );
+    }
+
+    const intervalLabel = plan.interval === "year" ? "year" : "month";
+
+    return {
+      id: plan.id,
+      planId: plan.id,
+      type: "subscription",
+      role,
+      interval: plan.interval,
+      name: plan.label,
+      description: `Recurring ${role} subscription billed every ${intervalLabel}.`,
+      price_usd: plan.amount ?? 0,
+      currency: plan.currency || "USD",
+      features: [
+        `Unlock ${role} dashboard features`,
+        "Messaging and organization access when subscription mode is enabled",
+        "Automatic Stripe subscription status sync",
+        plan.interval === "year" ? "Yearly billing" : "Monthly billing",
+      ],
+    };
   };
 
   const loadPackage = async (type, id) => {
@@ -197,7 +313,7 @@ export default function Checkout() {
       }
       default:
         throw new Error(
-          `Invalid package type: ${type}. Expected: visa, tutor, student_tutor, tutoring_session, marketplace_order`
+          `Invalid package type: ${type}. Expected: subscription, visa, tutor, student_tutor, tutoring_session, marketplace_order`
         );
     }
   };
@@ -309,11 +425,8 @@ export default function Checkout() {
 
         if (!packageType) {
           throw new Error(
-            `Package type is missing from URL. Expected ?type=visa|tutor|student_tutor|tutoring_session|marketplace_order`
+            `Checkout type is missing from URL. Expected ?type=subscription|visa|tutor|student_tutor|tutoring_session|marketplace_order`
           );
-        }
-        if (!packageId) {
-          throw new Error(`Package ID is missing from URL. Expected ?packageId=...`);
         }
 
         // user
@@ -321,7 +434,17 @@ export default function Checkout() {
         if (!userRef) throw new Error("You must be signed in to checkout.");
         const userSnap = await getDoc(userRef);
         if (!userSnap.exists()) throw new Error("User profile not found.");
-        setUserDoc({ id: userSnap.id, ...userSnap.data() });
+        const loadedUserDoc = { id: userSnap.id, ...userSnap.data() };
+        setUserDoc(loadedUserDoc);
+
+        if (isSubscriptionCheckout) {
+          setPkg(buildSubscriptionPackage(loadedUserDoc));
+          return;
+        }
+
+        if (!packageId) {
+          throw new Error(`Package ID is missing from URL. Expected ?packageId=...`);
+        }
 
         // package
         const pkgLoaded = await loadPackage(packageType, packageId);
@@ -333,21 +456,88 @@ export default function Checkout() {
         setPkg(pkgLoaded);
       } catch (e) {
         console.error("Checkout load error:", e);
-        setError(e.message || "Failed to load package information.");
+        setError(e.message || "Failed to load checkout information.");
       } finally {
         setLoading(false);
       }
     })();
-  }, [packageType, packageId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [packageType, packageId, requestedPlanId, requestedRole, isSubscriptionCheckout]);
 
   // ---------- payment handlers ----------
+  const handleSubscriptionSuccess = async (paymentData) => {
+    const userRef = getUserDocRef();
+    if (!userRef) throw new Error("No authenticated user.");
+
+    const provider = String(paymentData?.provider || "stripe").toLowerCase();
+    const session = paymentData?.session || null;
+    const subscriptionStatus = String(
+      session?.subscription_status || session?.status || "active"
+    )
+      .toLowerCase()
+      .trim();
+
+    const finalStatus = ACTIVE_SUBSCRIPTION_STATUSES.includes(subscriptionStatus)
+      ? subscriptionStatus
+      : provider === "stripe"
+        ? "active"
+        : "paid";
+
+    await updateDoc(userRef, {
+      selected_role: pkg.role,
+      user_type: pkg.role,
+      subscription_active: true,
+      subscription_status: finalStatus,
+      subscription_provider: provider,
+      subscription_plan: pkg.planId,
+      subscription_role: pkg.role,
+      subscription_interval: pkg.interval || "month",
+      subscription_amount: safePrice(pkg.price_usd),
+      stripe_session_id:
+        provider === "stripe" ? paymentData?.transactionId || paymentData?.id || null : null,
+      stripe_subscription_id:
+        provider === "stripe" ? session?.subscription_id || session?.subscription || null : null,
+      stripe_customer_id:
+        provider === "stripe" ? session?.customer_id || session?.customer || null : null,
+      subscription_updated_at: serverTimestamp(),
+    });
+
+    // Optional local payment audit. The webhook may also write payment/subscription data.
+    await addDoc(collection(db, "payments"), {
+      user_id: userRef.id,
+      related_entity_type: "subscription_checkout",
+      related_entity_id: pkg.planId,
+      amount_usd: safePrice(pkg.price_usd),
+      status: "successful",
+      provider,
+      transaction_id: paymentData?.transactionId || paymentData?.id || null,
+      created_date: serverTimestamp(),
+      meta: {
+        mode: "subscription",
+        planId: pkg.planId,
+        role: pkg.role,
+        interval: pkg.interval,
+        description: `${pkg.name} subscription`,
+      },
+    });
+
+    const destination = returnTo || createPageUrl(getReturnPageForRole(pkg.role));
+    navigate(destination);
+  };
+
   const handlePaymentSuccess = async (paymentData) => {
     try {
       setLoading(true);
+      setProcessing(true);
       setError(null);
 
       const userRef = getUserDocRef();
       if (!userRef) throw new Error("No authenticated user.");
+
+      if (pkg?.type === "subscription") {
+        await handleSubscriptionSuccess(paymentData);
+        return;
+      }
 
       // Record the payment
       await addDoc(collection(db, "payments"), {
@@ -368,11 +558,8 @@ export default function Checkout() {
       const u = userDoc || {};
       const updates = {};
 
-      // 👇 NEW: derive agent for visa cases
-      const agentId =
-        u.assigned_agent_id ||
-        u.referred_by_agent_id ||
-        null;
+      // Derive agent for visa cases
+      const agentId = u.assigned_agent_id || u.referred_by_agent_id || null;
 
       switch (pkg.type) {
         case "visa": {
@@ -384,7 +571,7 @@ export default function Checkout() {
 
           await addDoc(collection(db, "cases"), {
             student_id: userRef.id,
-            agent_id: agentId, // 👈 NEW FIELD
+            agent_id: agentId,
             case_type: pkg.name,
             package_id: pkg.id,
             status: "Application Started",
@@ -448,7 +635,6 @@ export default function Checkout() {
           navigate(createPageUrl("Tutors"));
           break;
         case "tutoring_session":
-          // FIXED: StudentDashboard route doesn't exist; send to MySessions (or Dashboard)
           navigate(createPageUrl("MySessions"));
           break;
         case "marketplace_order":
@@ -463,12 +649,26 @@ export default function Checkout() {
         "Payment succeeded, but we couldn't update your account. Please contact support."
       );
       setLoading(false);
+      setProcessing(false);
     }
   };
 
   const handlePaymentError = (err) => {
     console.error("Payment error:", err);
     setError(err?.message || "Payment failed. Please try again.");
+    setProcessing(false);
+  };
+
+  const handlePlanSwitch = (planId) => {
+    if (!pkg?.role || !planId) return;
+    const next = new URL(window.location.href);
+    next.searchParams.set("type", "subscription");
+    next.searchParams.set("role", pkg.role);
+    next.searchParams.set("plan", planId);
+    next.searchParams.delete("packageId");
+    next.searchParams.delete("package");
+    next.searchParams.delete("id");
+    navigate(`${next.pathname}${next.search}${next.hash || ""}`);
   };
 
   // ---------- UI ----------
@@ -524,7 +724,7 @@ export default function Checkout() {
               Package Not Found
             </h2>
             <p className="text-gray-600 mb-4">
-              The requested package could not be found.
+              The requested checkout item could not be found.
             </p>
             <Button
               onClick={() => navigate(createPageUrl("Dashboard"))}
@@ -538,25 +738,44 @@ export default function Checkout() {
     );
   }
 
+  const title = isSubscriptionCheckout
+    ? "Activate Your Subscription"
+    : "Complete Your Purchase";
+
+  const subtitle = isSubscriptionCheckout
+    ? "Choose your plan and activate access to your GreenPass features."
+    : "Review your selection and complete payment.";
+
+  const summaryTitle = isSubscriptionCheckout ? "Subscription Summary" : "Package Summary";
+  const totalLabel = isSubscriptionCheckout ? "Due today:" : "Total:";
+  const intervalText =
+    isSubscriptionCheckout && pkg.interval
+      ? pkg.interval === "year"
+        ? "/year"
+        : "/month"
+      : "";
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-4xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Complete Your Purchase
-          </h1>
-          <p className="text-gray-600">
-            Review your selection and complete payment
-          </p>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">{title}</h1>
+          <p className="text-gray-600">{subtitle}</p>
         </div>
 
+        {isSubscriptionCheckout && isAlreadySubscribed ? (
+          <div className="mb-6 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+            Your account already has an active subscription. You can still change plans if needed.
+          </div>
+        ) : null}
+
         <div className="grid lg:grid-cols-2 gap-8">
-          {/* Package Summary */}
+          {/* Package / Subscription Summary */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <PackageIcon className="w-5 h-5" />
-                Package Summary
+                {summaryTitle}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -564,6 +783,26 @@ export default function Checkout() {
                 <h3 className="text-xl font-semibold text-gray-900">{pkg.name}</h3>
                 <p className="text-gray-600 mt-1">{pkg.description}</p>
               </div>
+
+              {isSubscriptionCheckout && selectedPlanOptions.length > 1 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {selectedPlanOptions.map((plan) => {
+                    const active = plan.id === pkg.planId;
+                    return (
+                      <Button
+                        key={plan.id}
+                        type="button"
+                        variant={active ? "default" : "outline"}
+                        className="justify-between rounded-2xl"
+                        onClick={() => handlePlanSwitch(plan.id)}
+                      >
+                        <span>{plan.interval === "year" ? "Yearly" : "Monthly"}</span>
+                        <span>${Number(plan.amount || 0)}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              ) : null}
 
               {pkg.features?.length > 0 && (
                 <div>
@@ -574,7 +813,7 @@ export default function Checkout() {
                         key={idx}
                         className="flex items-center gap-2 text-sm text-gray-600"
                       >
-                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
                         {feature}
                       </li>
                     ))}
@@ -584,9 +823,9 @@ export default function Checkout() {
 
               <div className="border-t pt-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-lg font-semibold">Total:</span>
+                  <span className="text-lg font-semibold">{totalLabel}</span>
                   <span className="text-2xl font-bold text-green-600">
-                    ${safePrice(pkg.price_usd)}
+                    ${safePrice(pkg.price_usd)}{intervalText}
                   </span>
                 </div>
               </div>
@@ -602,17 +841,38 @@ export default function Checkout() {
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {processing ? (
+                <div className="mb-4 rounded-xl border bg-blue-50 px-4 py-3 text-sm text-blue-800 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Finalizing your checkout...
+                </div>
+              ) : null}
+
               <SharedPaymentGateway
+                paymentMode={isSubscriptionCheckout ? "subscription" : "payment"}
+                planId={isSubscriptionCheckout ? pkg.planId : ""}
                 amountUSD={safePrice(pkg.price_usd)}
-                itemDescription={`${pkg.name} - ${pkg.type} package`}
+                itemDescription={
+                  isSubscriptionCheckout
+                    ? `${pkg.name} subscription`
+                    : `${pkg.name} - ${pkg.type} package`
+                }
                 payerName={userDoc?.full_name || userDoc?.name || ""}
-                payerEmail={userDoc?.email || ""}
+                payerEmail={userDoc?.email || auth.currentUser?.email || ""}
                 paypalClientId={paypalClientId || undefined}
+                onProcessing={() => setProcessing(true)}
+                onDoneProcessing={() => setProcessing(false)}
                 onCardPaymentSuccess={(provider, transactionId, meta) =>
                   handlePaymentSuccess({ provider, transactionId, ...meta })
                 }
                 onError={handlePaymentError}
               />
+
+              {isSubscriptionCheckout ? (
+                <p className="mt-3 text-xs text-gray-500">
+                  Stripe subscriptions are synced back to your user profile. Once payment is successful, locked pages will unlock automatically when your subscription status becomes active.
+                </p>
+              ) : null}
             </CardContent>
           </Card>
         </div>

@@ -1404,8 +1404,56 @@ function readJsonBody(req) {
   return req.body;
 }
 
+function toFirestoreTimestampFromUnix(seconds) {
+  const n = Number(seconds || 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return admin.firestore.Timestamp.fromMillis(n * 1000);
+}
+
+function normalizeStripePlanId(planId = "") {
+  return String(planId || "").trim().toLowerCase();
+}
+
+function getRoleFromPlanId(planId = "") {
+  const p = normalizeStripePlanId(planId);
+  if (p.startsWith("agent_")) return "agent";
+  if (p.startsWith("school_")) return "school";
+  if (p.startsWith("tutor_")) return "tutor";
+  return "";
+}
+
+function getIntervalFromPlanId(planId = "") {
+  const p = normalizeStripePlanId(planId);
+  if (p.endsWith("_monthly")) return "month";
+  if (p.endsWith("_yearly")) return "year";
+  return "";
+}
+
+function isStripeSubscriptionActive(status = "", currentPeriodEnd = null) {
+  const s = String(status || "").toLowerCase().trim();
+  const ok = new Set(["active", "trialing", "paid"]);
+
+  if (!ok.has(s)) return false;
+
+  if (currentPeriodEnd) {
+    const endMs =
+      typeof currentPeriodEnd.toMillis === "function"
+        ? currentPeriodEnd.toMillis()
+        : currentPeriodEnd instanceof Date
+        ? currentPeriodEnd.getTime()
+        : Number(currentPeriodEnd || 0);
+
+    if (Number.isFinite(endMs) && endMs > 0 && endMs < Date.now()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function getStripeConfig() {
   let docData = {};
+
   try {
     const snap = await admin.firestore().doc("payment_settings/stripe").get();
     if (snap.exists) docData = snap.data() || {};
@@ -1425,6 +1473,13 @@ async function getStripeConfig() {
     docData.publishable_key ||
     docData.stripe_publishable_key ||
     docData.publishableKey ||
+    "";
+
+  const webhookSecret =
+    process.env.STRIPE_WEBHOOK_SECRET ||
+    docData.webhook_secret ||
+    docData.stripe_webhook_secret ||
+    docData.webhookSecret ||
     "";
 
   const currency = String(
@@ -1466,6 +1521,7 @@ async function getStripeConfig() {
   return {
     secretKey: String(secretKey || "").trim(),
     publishableKey: String(publishableKey || "").trim(),
+    webhookSecret: String(webhookSecret || "").trim(),
     currency,
     active,
     priceIds,
@@ -1474,12 +1530,247 @@ async function getStripeConfig() {
 
 function appendQueryParams(baseUrl, params) {
   const url = new URL(baseUrl);
+
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, String(value));
     }
   });
+
   return url.toString();
+}
+
+function buildSubscriptionUserUpdate({
+  uid = "",
+  subscription = null,
+  session = null,
+  invoice = null,
+  planId = "",
+  fallbackEmail = "",
+  forceInactive = false,
+  forcedStatus = "",
+}) {
+  const metadata = {
+    ...(session?.metadata || {}),
+    ...(subscription?.metadata || {}),
+    ...(invoice?.metadata || {}),
+  };
+
+  const finalPlanId =
+    normalizeStripePlanId(
+      planId ||
+        metadata.gp_plan_id ||
+        metadata.planId ||
+        session?.metadata?.gp_plan_id ||
+        subscription?.metadata?.gp_plan_id ||
+        ""
+    ) || "";
+
+  const subscriptionId =
+    typeof session?.subscription === "string"
+      ? session.subscription
+      : session?.subscription?.id ||
+        subscription?.id ||
+        invoice?.subscription ||
+        "";
+
+  const customerId =
+    typeof session?.customer === "string"
+      ? session.customer
+      : session?.customer?.id ||
+        (typeof subscription?.customer === "string"
+          ? subscription.customer
+          : subscription?.customer?.id) ||
+        (typeof invoice?.customer === "string"
+          ? invoice.customer
+          : invoice?.customer?.id) ||
+        "";
+
+  const priceId =
+    subscription?.items?.data?.[0]?.price?.id ||
+    session?.line_items?.data?.[0]?.price?.id ||
+    "";
+
+  const currentPeriodStart = toFirestoreTimestampFromUnix(
+    subscription?.current_period_start
+  );
+
+  const currentPeriodEnd = toFirestoreTimestampFromUnix(
+    subscription?.current_period_end
+  );
+
+  const stripeStatus =
+    forcedStatus ||
+    subscription?.status ||
+    session?.subscription?.status ||
+    session?.subscription_status ||
+    "";
+
+  const normalizedStatus = String(stripeStatus || "").toLowerCase().trim();
+
+  const active = forceInactive
+    ? false
+    : isStripeSubscriptionActive(normalizedStatus, currentPeriodEnd);
+
+  const interval = getIntervalFromPlanId(finalPlanId);
+
+  const amount =
+    subscription?.items?.data?.[0]?.price?.unit_amount
+      ? Number(subscription.items.data[0].price.unit_amount) / 100
+      : session?.amount_total
+      ? Number(session.amount_total) / 100
+      : 0;
+
+  const currency =
+    subscription?.items?.data?.[0]?.price?.currency ||
+    session?.currency ||
+    invoice?.currency ||
+    "usd";
+
+  return {
+    subscription_active: active,
+    subscription_status: normalizedStatus || (active ? "active" : "none"),
+    subscription_provider: "stripe",
+    subscription_plan: finalPlanId,
+    subscription_interval: interval,
+    subscription_amount: amount,
+    subscription_currency: String(currency || "usd").toUpperCase(),
+
+    stripe_customer_id: customerId || "",
+    stripe_subscription_id: subscriptionId || "",
+    stripe_price_id: priceId || "",
+    stripe_current_period_start: currentPeriodStart,
+    stripe_current_period_end: currentPeriodEnd,
+    stripe_cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
+    stripe_canceled_at: toFirestoreTimestampFromUnix(subscription?.canceled_at),
+    stripe_ended_at: toFirestoreTimestampFromUnix(subscription?.ended_at),
+    stripe_latest_invoice_id:
+      typeof subscription?.latest_invoice === "string"
+        ? subscription.latest_invoice
+        : subscription?.latest_invoice?.id ||
+          invoice?.id ||
+          "",
+
+    payment_provider: "stripe",
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    subscription_updated_at: admin.firestore.FieldValue.serverTimestamp(),
+
+    ...(fallbackEmail ? { subscription_customer_email: fallbackEmail } : {}),
+  };
+}
+
+async function findUserIdForStripeObject({ session = null, subscription = null, invoice = null }) {
+  const metadata = {
+    ...(session?.metadata || {}),
+    ...(subscription?.metadata || {}),
+    ...(invoice?.metadata || {}),
+  };
+
+  const uid = String(
+    metadata.uid ||
+      metadata.userId ||
+      metadata.firebase_uid ||
+      metadata.firebaseUid ||
+      session?.client_reference_id ||
+      ""
+  ).trim();
+
+  if (uid) return uid;
+
+  const customerId =
+    typeof session?.customer === "string"
+      ? session.customer
+      : session?.customer?.id ||
+        (typeof subscription?.customer === "string"
+          ? subscription.customer
+          : subscription?.customer?.id) ||
+        (typeof invoice?.customer === "string"
+          ? invoice.customer
+          : invoice?.customer?.id) ||
+        "";
+
+  if (customerId) {
+    const snap = await admin
+      .firestore()
+      .collection("users")
+      .where("stripe_customer_id", "==", customerId)
+      .limit(1)
+      .get();
+
+    if (!snap.empty) return snap.docs[0].id;
+  }
+
+  const email = String(
+    session?.customer_email ||
+      session?.customer_details?.email ||
+      invoice?.customer_email ||
+      metadata.payer_email ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (email) {
+    const snap = await admin
+      .firestore()
+      .collection("users")
+      .where("email", "==", email)
+      .limit(1)
+      .get();
+
+    if (!snap.empty) return snap.docs[0].id;
+  }
+
+  return "";
+}
+
+async function saveStripeSubscriptionToUser({
+  uid,
+  subscription,
+  session = null,
+  invoice = null,
+  planId = "",
+  forceInactive = false,
+  forcedStatus = "",
+}) {
+  if (!uid) {
+    console.warn("saveStripeSubscriptionToUser skipped: missing uid");
+    return;
+  }
+
+  const update = buildSubscriptionUserUpdate({
+    uid,
+    subscription,
+    session,
+    invoice,
+    planId,
+    fallbackEmail:
+      session?.customer_email ||
+      session?.customer_details?.email ||
+      invoice?.customer_email ||
+      "",
+    forceInactive,
+    forcedStatus,
+  });
+
+  await admin.firestore().collection("users").doc(uid).set(update, { merge: true });
+
+  const subId = update.stripe_subscription_id;
+  if (subId) {
+    await admin
+      .firestore()
+      .collection("stripe_subscriptions")
+      .doc(subId)
+      .set(
+        {
+          uid,
+          ...update,
+          raw_status: subscription?.status || forcedStatus || "",
+          last_event_at: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+  }
 }
 
 exports.createStripeCheckoutSession = onRequest(async (req, res) => {
@@ -1502,7 +1793,8 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
           ? "subscription"
           : "payment";
 
-      const planId = String(body.planId || "").trim();
+      const uid = String(body.uid || body.userId || body.firebaseUid || "").trim();
+      const planId = normalizeStripePlanId(body.planId || "");
       const amountUSD = Number(body.amountUSD || 0);
       const description = String(body.description || body.itemDescription || "Payment").trim();
       const payerEmail = String(body.payerEmail || "").trim();
@@ -1511,6 +1803,14 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
 
       if (!returnUrl) {
         res.status(400).json({ ok: false, error: "Missing returnUrl." });
+        return;
+      }
+
+      if (paymentMode === "subscription" && !uid) {
+        res.status(400).json({
+          ok: false,
+          error: "Missing uid/userId for Stripe subscription.",
+        });
         return;
       }
 
@@ -1531,7 +1831,9 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
         gp_payment_status: "success",
       });
 
-      const successUrl = `${successBase}${successBase.includes("?") ? "&" : "?"}stripe_session_id={CHECKOUT_SESSION_ID}`;
+      const successUrl = `${successBase}${
+        successBase.includes("?") ? "&" : "?"
+      }stripe_session_id={CHECKOUT_SESSION_ID}`;
 
       const cancelUrl = appendQueryParams(returnUrl, {
         gp_payment_provider: "stripe",
@@ -1547,6 +1849,7 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
         }
 
         const stripePriceId = stripeConfig.priceIds?.[planId];
+
         if (!stripePriceId) {
           res.status(400).json({
             ok: false,
@@ -1559,6 +1862,7 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
           mode: "subscription",
           payment_method_types: ["card"],
           customer_email: payerEmail || undefined,
+          client_reference_id: uid,
           success_url: successUrl,
           cancel_url: cancelUrl,
           line_items: [
@@ -1568,6 +1872,8 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
             },
           ],
           metadata: {
+            uid,
+            userId: uid,
             gp_checkout_mode: "subscription",
             gp_plan_id: planId,
             payer_name: payerName || "",
@@ -1576,6 +1882,8 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
           },
           subscription_data: {
             metadata: {
+              uid,
+              userId: uid,
               gp_checkout_mode: "subscription",
               gp_plan_id: planId,
               payer_name: payerName || "",
@@ -1594,6 +1902,7 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
           mode: "payment",
           payment_method_types: ["card"],
           customer_email: payerEmail || undefined,
+          client_reference_id: uid || undefined,
           success_url: successUrl,
           cancel_url: cancelUrl,
           line_items: [
@@ -1609,6 +1918,8 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
             },
           ],
           metadata: {
+            uid,
+            userId: uid,
             gp_checkout_mode: "payment",
             gp_plan_id: planId || "",
             payer_name: payerName || "",
@@ -1626,6 +1937,7 @@ exports.createStripeCheckoutSession = onRequest(async (req, res) => {
       });
     } catch (error) {
       console.error("createStripeCheckoutSession error:", error);
+
       res.status(500).json({
         ok: false,
         error: error?.message || "Failed to create Stripe checkout session.",
@@ -1648,8 +1960,7 @@ exports.getStripeCheckoutSession = onRequest(async (req, res) => {
 
     try {
       const body = readJsonBody(req);
-      const sessionId =
-        String(body.sessionId || req.query.sessionId || "").trim();
+      const sessionId = String(body.sessionId || req.query.sessionId || "").trim();
 
       if (!sessionId) {
         res.status(400).json({ ok: false, error: "Missing sessionId." });
@@ -1672,9 +1983,7 @@ exports.getStripeCheckoutSession = onRequest(async (req, res) => {
         expand: ["payment_intent", "subscription"],
       });
 
-      const paid =
-        session?.payment_status === "paid" ||
-        session?.status === "complete";
+      const paid = session?.payment_status === "paid" || session?.status === "complete";
 
       const subscriptionObject =
         typeof session.subscription === "string" ? null : session.subscription || null;
@@ -1683,6 +1992,22 @@ exports.getStripeCheckoutSession = onRequest(async (req, res) => {
         typeof session.subscription === "string"
           ? session.subscription
           : session.subscription?.id || null;
+
+      if (session.mode === "subscription" && subscriptionObject) {
+        const uid = await findUserIdForStripeObject({
+          session,
+          subscription: subscriptionObject,
+        });
+
+        if (uid) {
+          await saveStripeSubscriptionToUser({
+            uid,
+            subscription: subscriptionObject,
+            session,
+            planId: session?.metadata?.gp_plan_id || "",
+          });
+        }
+      }
 
       res.status(200).json({
         ok: true,
@@ -1695,23 +2020,192 @@ exports.getStripeCheckoutSession = onRequest(async (req, res) => {
           amount_total: session.amount_total,
           currency: session.currency,
           customer_email: session.customer_email,
+          customer_id:
+            typeof session.customer === "string"
+              ? session.customer
+              : session.customer?.id || null,
           payment_intent:
             typeof session.payment_intent === "string"
               ? session.payment_intent
               : session.payment_intent?.id || null,
           subscription_id: subscriptionId,
           subscription_status: subscriptionObject?.status || null,
+          current_period_start: subscriptionObject?.current_period_start || null,
+          current_period_end: subscriptionObject?.current_period_end || null,
+          cancel_at_period_end: subscriptionObject?.cancel_at_period_end || false,
           metadata: session.metadata || {},
         },
       });
     } catch (error) {
       console.error("getStripeCheckoutSession error:", error);
+
       res.status(500).json({
         ok: false,
         error: error?.message || "Failed to retrieve Stripe checkout session.",
       });
     }
   });
+});
+
+exports.stripeWebhook = onRequest(async (req, res) => {
+  try {
+    if (req.method !== "POST") {
+      res.status(405).send("Method not allowed");
+      return;
+    }
+
+    const stripeConfig = await getStripeConfig();
+
+    if (!stripeConfig.secretKey) {
+      res.status(500).send("Stripe secret key missing");
+      return;
+    }
+
+    if (!stripeConfig.webhookSecret) {
+      res.status(500).send("Stripe webhook secret missing");
+      return;
+    }
+
+    const stripe = new Stripe(stripeConfig.secretKey);
+
+    const signature = req.headers["stripe-signature"];
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.rawBody,
+        signature,
+        stripeConfig.webhookSecret
+      );
+    } catch (err) {
+      console.error("Stripe webhook signature verification failed:", err?.message);
+      res.status(400).send(`Webhook Error: ${err?.message}`);
+      return;
+    }
+
+    const type = event.type;
+    const object = event.data.object;
+
+    console.log("stripeWebhook received:", type, object?.id || "");
+
+    if (type === "checkout.session.completed") {
+      const session = object;
+
+      if (session.mode === "subscription") {
+        const subscriptionId =
+          typeof session.subscription === "string"
+            ? session.subscription
+            : session.subscription?.id;
+
+        if (subscriptionId) {
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+          const uid = await findUserIdForStripeObject({
+            session,
+            subscription,
+          });
+
+          await saveStripeSubscriptionToUser({
+            uid,
+            subscription,
+            session,
+            planId: session?.metadata?.gp_plan_id || subscription?.metadata?.gp_plan_id || "",
+          });
+        }
+      }
+    }
+
+    if (
+      type === "customer.subscription.created" ||
+      type === "customer.subscription.updated"
+    ) {
+      const subscription = object;
+
+      const uid = await findUserIdForStripeObject({
+        subscription,
+      });
+
+      await saveStripeSubscriptionToUser({
+        uid,
+        subscription,
+        planId: subscription?.metadata?.gp_plan_id || "",
+      });
+    }
+
+    if (type === "customer.subscription.deleted") {
+      const subscription = object;
+
+      const uid = await findUserIdForStripeObject({
+        subscription,
+      });
+
+      await saveStripeSubscriptionToUser({
+        uid,
+        subscription,
+        planId: subscription?.metadata?.gp_plan_id || "",
+        forceInactive: true,
+        forcedStatus: "canceled",
+      });
+    }
+
+    if (type === "invoice.paid") {
+      const invoice = object;
+
+      const subscriptionId =
+        typeof invoice.subscription === "string"
+          ? invoice.subscription
+          : invoice.subscription?.id;
+
+      if (subscriptionId) {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+        const uid = await findUserIdForStripeObject({
+          subscription,
+          invoice,
+        });
+
+        await saveStripeSubscriptionToUser({
+          uid,
+          subscription,
+          invoice,
+          planId: subscription?.metadata?.gp_plan_id || invoice?.metadata?.gp_plan_id || "",
+        });
+      }
+    }
+
+    if (type === "invoice.payment_failed") {
+      const invoice = object;
+
+      const subscriptionId =
+        typeof invoice.subscription === "string"
+          ? invoice.subscription
+          : invoice.subscription?.id;
+
+      if (subscriptionId) {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+        const uid = await findUserIdForStripeObject({
+          subscription,
+          invoice,
+        });
+
+        await saveStripeSubscriptionToUser({
+          uid,
+          subscription,
+          invoice,
+          planId: subscription?.metadata?.gp_plan_id || invoice?.metadata?.gp_plan_id || "",
+          forceInactive: true,
+          forcedStatus: "past_due",
+        });
+      }
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    console.error("stripeWebhook error:", error);
+    res.status(500).send(error?.message || "Stripe webhook failed");
+  }
 });
 
 async function acceptStudentReferralInternal({

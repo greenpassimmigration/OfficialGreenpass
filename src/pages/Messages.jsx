@@ -12,11 +12,12 @@ import { onAuthStateChanged } from "firebase/auth";
 import { doc, setDoc, serverTimestamp, getDoc } from "firebase/firestore";
 import { auth, db } from "@/firebase";
 import { createPageUrl } from "@/utils";
+import { getDefaultPlanIdForRole } from "@/config/subscriptionPlans";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Loader2, Send, MessageSquare, ArrowLeft, MoreVertical, Flag, UserPlus, Paperclip, FileText, Image as ImageIcon } from "lucide-react";
+import { Loader2, Send, MessageSquare, ArrowLeft, MoreVertical, Flag, UserPlus, Paperclip, FileText } from "lucide-react";
 
 // ✅ Global toggle: Admin can turn subscription gating ON/OFF
 import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
@@ -32,7 +33,6 @@ import {
   listenToMyConversations,
   createReport,
   acceptMessagingAgreement,
-  MESSAGING_LIMITS,
 } from "@/api/messaging";
 
 function displayName(u) {
@@ -48,14 +48,68 @@ function avatarUrl(u) {
   );
 }
 
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "tutor", "school"]);
+const ACCESS_ACTIVE_SUBSCRIPTION_STATUSES = new Set([
+  "active",
+  "trialing",
+  "paid",
+  "subscribed",
+]);
+const ACCESS_INACTIVE_SUBSCRIPTION_STATUSES = new Set([
+  "",
+  "none",
+  "skipped",
+  "inactive",
+  "incomplete",
+  "incomplete_expired",
+  "past_due",
+  "unpaid",
+  "canceled",
+  "cancelled",
+  "expired",
+]);
+
+function subscriptionStatus(userDoc) {
+  return String(userDoc?.subscription_status || "").toLowerCase().trim();
+}
+
+function isSubscriptionAccessActive(userDoc) {
+  if (!userDoc) return false;
+
+  const status = subscriptionStatus(userDoc);
+
+  // Stripe/PayPal success flows in this app set subscription_active=true.
+  if (userDoc?.subscription_active === true && !ACCESS_INACTIVE_SUBSCRIPTION_STATUSES.has(status)) {
+    return true;
+  }
+
+  return ACCESS_ACTIVE_SUBSCRIPTION_STATUSES.has(status);
+}
+
 function isSubInactiveForRole(userDoc) {
   const role = resolveUserRole(userDoc);
-  if (!(role === "agent" || role === "tutor" || role === "school")) return false;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(role)) return false;
 
-  // Use your real schema:
-  if (userDoc?.subscription_active === true) return false;
-  const s = String(userDoc?.subscription_status || "").toLowerCase().trim();
-  return !(s === "active" || s === "trialing");
+  return !isSubscriptionAccessActive(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, fallbackPath = "/messages") {
+  const role = resolveUserRole(userDoc);
+  const planId =
+    userDoc?.subscription_plan ||
+    getDefaultPlanIdForRole(role) ||
+    `${role}_monthly`;
+
+  const next = fallbackPath || "/messages";
+  const query = new URLSearchParams({
+    type: "subscription",
+    role,
+    plan: planId,
+    lock: "1",
+    next,
+  });
+
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
 }
 
 
@@ -175,6 +229,11 @@ const location = useLocation();
         return;
       }
 
+      if (subscriptionModeEnabled && isSubInactiveForRole(meDoc)) {
+        setErrorText("This tutor feature is locked. Please activate your subscription first.");
+        return;
+      }
+
       const relId = `${tutorId}_${studentId}`;
       await setDoc(
         doc(db, "tutor_students", relId),
@@ -214,7 +273,7 @@ const location = useLocation();
       setErrorText(e?.message || "Failed to add student");
       setTimeout(() => setErrorText(""), 3000);
     }
-  }, [me?.uid, myRole]);
+  }, [me?.uid, myRole, subscriptionModeEnabled, meDoc]);
 // ✅ Add as a client (Agent only) -> writes to agent_students so it appears in MyStudents
 const handleAddClient = useCallback(async (studentId) => {
   try {
@@ -231,6 +290,11 @@ const handleAddClient = useCallback(async (studentId) => {
     const roleLower = String(myRole || "").toLowerCase().trim();
     if (roleLower !== "agent") {
       console.warn("Add as client: not an agent", roleLower);
+      return;
+    }
+
+    if (subscriptionModeEnabled && isSubInactiveForRole(meDoc)) {
+      setErrorText("This agent feature is locked. Please activate your subscription first.");
       return;
     }
 
@@ -258,7 +322,7 @@ const handleAddClient = useCallback(async (studentId) => {
     setErrorText(e?.message || "Failed to add client");
     setTimeout(() => setErrorText(""), 3000);
   }
-}, [me?.uid, myRole]);
+}, [me?.uid, myRole, subscriptionModeEnabled, meDoc]);
 
 
   const safeSetPeerCache = useCallback((uid, docu) => {
@@ -631,6 +695,11 @@ const handleAddClient = useCallback(async (studentId) => {
   // ✅ Only applies when admin has subscription mode ENABLED
   const locked = subscriptionModeEnabled ? isSubInactiveForRole(meDoc) : false;
 
+  const handleGoToSubscription = useCallback(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    navigate(buildSubscriptionCheckoutUrl(meDoc, currentPath));
+  }, [meDoc, navigate]);
+
   const openFilePicker = useCallback(() => {
     if (locked || showAgreement) return;
     filePickerRef.current?.click();
@@ -781,7 +850,7 @@ const handleAddClient = useCallback(async (studentId) => {
           <div className="font-semibold mb-1">You reached your free messaging limit</div>
           <div className="mb-2">You can start only limited new conversations per month on the free tier.</div>
           <div className="flex gap-2">
-            <Button onClick={() => navigate("/pricing")}>Upgrade ($19/year)</Button>
+            <Button onClick={handleGoToSubscription}>Go to Subscription</Button>
             <Button variant="outline" onClick={() => setShowUpgrade(false)}>
               Not now
             </Button>
@@ -798,8 +867,8 @@ const handleAddClient = useCallback(async (studentId) => {
       {locked ? (
         <div className="mb-3 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-3 text-sm text-zinc-800">
           <div className="font-semibold mb-1">Messaging is locked</div>
-          <div className="mb-2">Your subscription is inactive/pending. Activate it to use messaging.</div>
-          <Button onClick={() => navigate("/pricing")}>Go to Payment</Button>
+          <div className="mb-2">Your subscription is inactive, pending, expired, or not linked yet. Activate a Stripe/PayPal subscription to use messaging.</div>
+          <Button onClick={handleGoToSubscription}>Go to Subscription</Button>
         </div>
       ) : null}
 
@@ -886,7 +955,8 @@ const handleAddClient = useCallback(async (studentId) => {
                                       return (
                                         <button
                                           type="button"
-                                          className="w-full px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50"
+                                          className="w-full px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                          disabled={locked}
                                           onClick={async () => {
                                             await handleAddStudent(otherId2);
                                             setMenuOpenId(null);
@@ -901,7 +971,8 @@ const handleAddClient = useCallback(async (studentId) => {
                                     return (
                                       <button
                                         type="button"
-                                        className="w-full px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50"
+                                        className="w-full px-3 py-2 text-sm flex items-center gap-2 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        disabled={locked}
                                         onClick={async () => {
                                           await handleAddClient(otherId2);
                                           setMenuOpenId(null);

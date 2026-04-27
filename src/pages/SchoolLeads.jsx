@@ -78,13 +78,71 @@ function resolveUserRole(userDoc) {
     .trim();
 }
 
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(['agent', 'tutor', 'school']);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'paid', 'subscribed']);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set([
+  '',
+  'none',
+  'skipped',
+  'inactive',
+  'incomplete',
+  'incomplete_expired',
+  'past_due',
+  'unpaid',
+  'canceled',
+  'cancelled',
+  'expired',
+]);
+
+function isSubscriptionAccessActive(userDoc) {
+  if (!userDoc) return false;
+
+  const status = String(
+    userDoc?.subscription_status ||
+      userDoc?.subscriptionStatus ||
+      ''
+  )
+    .toLowerCase()
+    .trim();
+
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+
+  if (
+    (userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) &&
+    !INACTIVE_SUBSCRIPTION_STATUSES.has(status)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function isSubInactiveForRole(userDoc) {
   const role = resolveUserRole(userDoc);
-  if (!(role === 'agent' || role === 'tutor' || role === 'school')) return false;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(role)) return false;
 
-  if (userDoc?.subscription_active === true) return false;
-  const s = String(userDoc?.subscription_status || '').toLowerCase().trim();
-  return !(s === 'active' || s === 'trialing');
+  return !isSubscriptionAccessActive(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, fallbackPath = '/school-leads') {
+  const role = resolveUserRole(userDoc);
+  const safeRole = SUBSCRIPTION_REQUIRED_ROLES.has(role) ? role : 'school';
+  const existingPlan = String(
+    userDoc?.subscription_plan ||
+      userDoc?.subscriptionPlan ||
+      ''
+  ).trim();
+  const plan = existingPlan || `${safeRole}_monthly`;
+
+  const query = new URLSearchParams({
+    type: 'subscription',
+    role: safeRole,
+    plan,
+    lock: '1',
+    returnTo: fallbackPath,
+  });
+
+  return `${createPageUrl('Checkout')}?${query.toString()}`;
 }
 
 function maskName(name) {
@@ -497,8 +555,15 @@ export default function SchoolLeads() {
     };
   }, []);
 
-  const shouldMaskLeadInfo =
+  const subscriptionLocked =
     subscriptionModeEnabled && isSubInactiveForRole(meDoc);
+
+  const shouldMaskLeadInfo = subscriptionLocked;
+
+  const handleGoToSubscription = useCallback(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ''}`;
+    navigate(buildSubscriptionCheckoutUrl(meDoc, currentPath));
+  }, [meDoc, navigate]);
 
   const loadLeads = useCallback(async () => {
     setLoading(true);
@@ -722,6 +787,14 @@ export default function SchoolLeads() {
         return { ok: false };
       }
 
+      if (subscriptionModeEnabled && isSubInactiveForRole(currentMeDoc)) {
+        if (isMountedRef.current) {
+          setQrNotice('Subscription required. Activate your subscription before scanning or accepting student QR leads.');
+          setPendingQrLead(null);
+        }
+        return { ok: false };
+      }
+
       const resolved = await resolveStudentQrToken(token);
 
       if (isMountedRef.current) {
@@ -742,7 +815,7 @@ export default function SchoolLeads() {
     } finally {
       if (isMountedRef.current) setResolvingQrLead(false);
     }
-  }, []);
+  }, [subscriptionModeEnabled]);
 
   const handleSchoolQrSubmit = useCallback(
     async (rawValue, options = {}) => {
@@ -860,6 +933,11 @@ export default function SchoolLeads() {
   };
 
   const handleViewStudentProfile = (lead) => {
+    if (subscriptionLocked) {
+      setErrorText('Student profile is locked. Activate your subscription to view full lead profiles.');
+      return;
+    }
+
     const studentUid =
       lead?.student?.uid ||
       lead?.student_id ||
@@ -877,6 +955,11 @@ export default function SchoolLeads() {
   };
 
   const handleViewPendingQrStudentProfile = () => {
+    if (subscriptionLocked) {
+      setErrorText('Student profile is locked. Activate your subscription to view full lead profiles.');
+      return;
+    }
+
     const studentUid = pendingQrLead?.studentId || '';
     if (!studentUid) return;
 
@@ -888,6 +971,11 @@ export default function SchoolLeads() {
   };
 
   const handleMessageLead = (lead) => {
+    if (subscriptionLocked) {
+      setErrorText('Messaging from leads is locked. Activate your subscription to message assigned agents.');
+      return;
+    }
+
     const agentId = getAssignedAgentId(lead);
     if (!agentId) return;
 
@@ -906,6 +994,11 @@ export default function SchoolLeads() {
   };
 
   const handleMarkContacted = async (lead) => {
+    if (subscriptionLocked) {
+      setErrorText('Lead status updates are locked. Activate your subscription to manage lead status.');
+      return;
+    }
+
     if (!lead?.id) return;
     if ((lead.status || 'interested') === 'contacted') return;
 
@@ -948,6 +1041,11 @@ export default function SchoolLeads() {
   };
 
   const handleAcceptQrLead = async () => {
+    if (subscriptionLocked) {
+      setErrorText('Accepting QR leads is locked. Activate your subscription to add students to your leads.');
+      return;
+    }
+
     if (!pendingQrLead?.studentId || !pendingQrToken) return;
 
     setActingQrLead(true);
@@ -986,6 +1084,11 @@ export default function SchoolLeads() {
   };
 
   const handleOpenScanner = () => {
+    if (subscriptionLocked) {
+      setErrorText('QR scanning is locked. Activate your subscription to scan and accept student QR leads.');
+      return;
+    }
+
     setScannerError('');
     setScannerSuccess('');
     setErrorText('');
@@ -1017,7 +1120,9 @@ export default function SchoolLeads() {
 
           <Button
             onClick={handleOpenScanner}
-            className="bg-pink-600 hover:bg-pink-700 w-full md:w-auto"
+            disabled={subscriptionLocked}
+            title={subscriptionLocked ? 'Activate your subscription to scan student QR leads.' : 'Scan Student QR'}
+            className="bg-pink-600 hover:bg-pink-700 w-full md:w-auto disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <QrCode className="w-4 h-4 mr-2" />
             Scan Student QR
@@ -1041,8 +1146,16 @@ export default function SchoolLeads() {
                   <p className="font-semibold">Lead details are locked</p>
                   <p className="text-sm text-amber-800 mt-1">
                     Subscription mode is enabled. Activate your subscription to view full student
-                    name, email, and phone number.
+                    name, email, phone number, profiles, QR lead actions, messaging, and lead status updates.
                   </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="mt-3 bg-amber-700 hover:bg-amber-800"
+                    onClick={handleGoToSubscription}
+                  >
+                    Go to Payment
+                  </Button>
                 </div>
               </div>
             </CardContent>
@@ -1121,7 +1234,7 @@ export default function SchoolLeads() {
                     <Button
                       variant="outline"
                       onClick={handleViewPendingQrStudentProfile}
-                      disabled={!pendingQrLead?.studentId || actingQrLead}
+                      disabled={!pendingQrLead?.studentId || actingQrLead || subscriptionLocked}
                     >
                       <Eye className="w-4 h-4 mr-2" />
                       View Profile
@@ -1147,8 +1260,8 @@ export default function SchoolLeads() {
                     ) : (
                       <Button
                         onClick={handleAcceptQrLead}
-                        disabled={actingQrLead}
-                        className="bg-pink-600 hover:bg-pink-700"
+                        disabled={actingQrLead || subscriptionLocked}
+                        className="bg-pink-600 hover:bg-pink-700 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {actingQrLead ? (
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -1289,8 +1402,8 @@ export default function SchoolLeads() {
                               size="sm"
                               className="gap-2"
                               onClick={() => handleViewStudentProfile(lead)}
-                              disabled={!(lead?.student?.uid || lead?.student_id || lead?.student?.id)}
-                              title="View student profile"
+                              disabled={subscriptionLocked || !(lead?.student?.uid || lead?.student_id || lead?.student?.id)}
+                              title={subscriptionLocked ? 'Activate your subscription to view student profiles.' : 'View student profile'}
                             >
                               <Eye className="w-4 h-4" />
                               View Profile
@@ -1301,8 +1414,8 @@ export default function SchoolLeads() {
                               size="sm"
                               className="gap-2"
                               onClick={() => handleMessageLead(lead)}
-                              disabled={!assignedAgentId}
-                              title={!assignedAgentId ? 'No assigned agent found for this student.' : 'Message assigned agent'}
+                              disabled={subscriptionLocked || !assignedAgentId}
+                              title={subscriptionLocked ? 'Activate your subscription to message assigned agents.' : (!assignedAgentId ? 'No assigned agent found for this student.' : 'Message assigned agent')}
                             >
                               <MessageSquare className="w-4 h-4" />
                               Message Agent
@@ -1313,7 +1426,8 @@ export default function SchoolLeads() {
                               size="sm"
                               className="gap-2"
                               onClick={() => handleMarkContacted(lead)}
-                              disabled={isContacted || isUpdating}
+                              disabled={subscriptionLocked || isContacted || isUpdating}
+                              title={subscriptionLocked ? 'Activate your subscription to update lead status.' : undefined}
                             >
                               {isUpdating ? (
                                 <Loader2 className="w-4 h-4 animate-spin" />

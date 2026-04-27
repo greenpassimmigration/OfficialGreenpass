@@ -1,6 +1,6 @@
 // src/pages/MyStudents.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,8 @@ import {
   Trash2,
   ScanLine,
   Camera,
+  Lock,
+  CreditCard,
 } from "lucide-react";
 import { createPageUrl } from "@/utils";
 
@@ -28,6 +30,7 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
   doc,
   setDoc,
   serverTimestamp,
@@ -37,6 +40,7 @@ import {
 
 // QR
 import { Html5Qrcode } from "html5-qrcode";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
 
 /**
  * AGENT-ONLY PAGE (My Clients)
@@ -169,6 +173,49 @@ function getClientIdFromRelation(data = {}) {
   return data.studentId || data.student_id || data.clientId || data.client_id || null;
 }
 
+
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "paid", "subscribed"]);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set(["", "none", "skipped", "inactive", "incomplete", "incomplete_expired", "past_due", "unpaid", "canceled", "cancelled", "expired"]);
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase().trim();
+  if (!role || role === "user" || role === "member" || role === "students") return "student";
+  if (role === "agents") return "agent";
+  if (role === "schools") return "school";
+  if (role === "tutors") return "tutor";
+  return role;
+}
+
+function resolveUserRole(userDoc, fallback = "student") {
+  return normalizeRole(userDoc?.role || userDoc?.selected_role || userDoc?.user_type || userDoc?.userType || userDoc?.signup_entry_role || fallback);
+}
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+  const status = String(userDoc?.subscription_status || userDoc?.subscriptionStatus || "").toLowerCase().trim();
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  if ((userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) && !INACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  return false;
+}
+
+function isSubscriptionLockedForRole(userDoc, subscriptionModeEnabled, expectedRole) {
+  if (!subscriptionModeEnabled) return false;
+  const role = resolveUserRole(userDoc, expectedRole);
+  const finalRole = SUBSCRIPTION_REQUIRED_ROLES.has(role) ? role : expectedRole;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(finalRole)) return false;
+  return !hasActiveSubscription(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, expectedRole, fallbackPath) {
+  const roleFromDoc = resolveUserRole(userDoc, expectedRole);
+  const role = SUBSCRIPTION_REQUIRED_ROLES.has(roleFromDoc) ? roleFromDoc : expectedRole;
+  const existingPlan = String(userDoc?.subscription_plan || userDoc?.subscriptionPlan || "").trim();
+  const plan = existingPlan || `${role}_monthly`;
+  const query = new URLSearchParams({ type: "subscription", role, plan, lock: "1", returnTo: fallbackPath || window.location.pathname || "/dashboard" });
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 function buildSuccessText(data) {
   let successText = "Student added successfully.";
 
@@ -182,12 +229,15 @@ function buildSuccessText(data) {
 }
 
 export default function MyStudents() {
+  const navigate = useNavigate();
+  const { subscriptionModeEnabled } = useSubscriptionMode();
   const [clients, setClients] = useState([]);
   const [removableClientIds, setRemovableClientIds] = useState(new Set());
   const [checklistsByClient, setChecklistsByClient] = useState({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [errorText, setErrorText] = useState("");
+  const [meDoc, setMeDoc] = useState(null);
   const [searchParams] = useSearchParams();
 
   const [docsOpen, setDocsOpen] = useState(false);
@@ -214,7 +264,27 @@ export default function MyStudents() {
     };
   }, []);
 
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLockedForRole(meDoc, subscriptionModeEnabled, "agent"),
+    [meDoc, subscriptionModeEnabled]
+  );
+
+  const subscriptionCheckoutUrl = useMemo(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    return buildSubscriptionCheckoutUrl(meDoc, "agent", currentPath);
+  }, [meDoc]);
+
+  const goToSubscription = () => navigate(subscriptionCheckoutUrl);
+
+  const requireSubscription = (message = "Subscription required. Activate your subscription to continue.") => {
+    if (!subscriptionLocked) return false;
+    setErrorText(message);
+    return true;
+  };
+
+
   const openDocs = (client) => {
+    if (requireSubscription("Document checklists are locked. Activate your agent subscription to manage client documents.")) return;
     setActiveClient(client);
     setDocName("");
     setDocsOpen(true);
@@ -261,6 +331,7 @@ export default function MyStudents() {
   };
 
   const handleToggleDoc = async (docId) => {
+    if (requireSubscription()) return;
     const auth = getAuth();
     const me = auth.currentUser;
     if (!me || !activeClient?.id) return;
@@ -281,6 +352,7 @@ export default function MyStudents() {
   };
 
   const handleAddDoc = async () => {
+    if (requireSubscription()) return;
     const name = String(docName || "").trim();
     if (!name) return;
 
@@ -312,6 +384,7 @@ export default function MyStudents() {
   };
 
   const handleRemoveDoc = async (docId) => {
+    if (requireSubscription()) return;
     const auth = getAuth();
     const me = auth.currentUser;
     if (!me || !activeClient?.id) return;
@@ -330,6 +403,7 @@ export default function MyStudents() {
   };
 
   const handleApplyTemplate = async () => {
+    if (requireSubscription()) return;
     const auth = getAuth();
     const me = auth.currentUser;
     if (!me || !activeClient?.id) return;
@@ -372,6 +446,9 @@ export default function MyStudents() {
         setLoading(false);
         return;
       }
+
+      const meSnap = await getDoc(doc(db, "users", me.uid));
+      if (isMountedRef.current) setMeDoc(meSnap.exists() ? { id: meSnap.id, ...meSnap.data() } : null);
 
       const agentClientQueries = [
         query(collection(db, "agent_clients"), where("agentId", "==", me.uid)),
@@ -563,10 +640,11 @@ export default function MyStudents() {
         }
       }
     },
-    [scannerBusy, fetchData, closeScanner]
+    [scannerBusy, fetchData, closeScanner, subscriptionLocked]
   );
 
   const startScanner = async () => {
+    if (requireSubscription("QR scanning is locked. Activate your subscription to add students.")) return;
     setScannerOpen(true);
     setScannerStarting(true);
     setScannerError("");
@@ -726,7 +804,7 @@ export default function MyStudents() {
           </div>
         </div>
 
-        <Button type="button" className="rounded-xl" onClick={startScanner}>
+        <Button type="button" className="rounded-xl" onClick={startScanner} disabled={subscriptionLocked}>
           <ScanLine className="h-4 w-4 mr-2" />
           Scan Student QR
         </Button>
@@ -736,6 +814,28 @@ export default function MyStudents() {
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {errorText}
         </div>
+      ) : null}
+
+
+
+      {subscriptionLocked ? (
+        <Card className="mb-4 rounded-2xl border-amber-200 bg-amber-50">
+          <CardContent className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3 text-amber-900">
+              <Lock className="h-5 w-5 mt-0.5 shrink-0" />
+              <div>
+                <div className="font-semibold">Subscription required</div>
+                <div className="text-sm text-amber-800 mt-1">
+                  Subscription mode is enabled. Activate your agent subscription to use QR scanning, messaging, and document checklist tools.
+                </div>
+              </div>
+            </div>
+            <Button type="button" onClick={goToSubscription} className="shrink-0 rounded-xl">
+              <CreditCard className="h-4 w-4 mr-2" />
+              Go to Payment
+            </Button>
+          </CardContent>
+        </Card>
       ) : null}
 
       <Card className="rounded-2xl">
@@ -818,7 +918,7 @@ export default function MyStudents() {
                             variant="outline"
                             size="sm"
                             className="rounded-xl"
-                            disabled={!isRemovable}
+                            disabled={subscriptionLocked || !isRemovable}
                             title={
                               isRemovable ? "Remove from your client list" : "Client cannot be removed"
                             }
@@ -877,7 +977,7 @@ export default function MyStudents() {
                         variant="outline"
                         size="sm"
                         className="rounded-xl"
-                        disabled={!isRemovable}
+                        disabled={subscriptionLocked || !isRemovable}
                         title={
                           isRemovable ? "Remove from your client list" : "Client cannot be removed"
                         }

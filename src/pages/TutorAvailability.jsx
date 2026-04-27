@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { User } from '@/api/entities';
 import { Tutor } from '@/api/entities';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,7 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Calendar, Clock, Plus, Trash2, Save, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { createPageUrl } from "@/utils";
+import { useSubscriptionMode } from "@/hooks/useSubscriptionMode";
+import { Calendar, Clock, Plus, Trash2, Save, Loader2, CheckCircle, AlertCircle, Lock, CreditCard } from 'lucide-react';
 
 const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const timezones = [
@@ -54,7 +57,52 @@ const TimeSlot = ({ slot, onUpdate, onDelete }) => (
   </div>
 );
 
+
+const SUBSCRIPTION_REQUIRED_ROLES = new Set(["agent", "school", "tutor"]);
+const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "paid", "subscribed"]);
+const INACTIVE_SUBSCRIPTION_STATUSES = new Set(["", "none", "skipped", "inactive", "incomplete", "incomplete_expired", "past_due", "unpaid", "canceled", "cancelled", "expired"]);
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase().trim();
+  if (!role || role === "user" || role === "member" || role === "students") return "student";
+  if (role === "agents") return "agent";
+  if (role === "schools") return "school";
+  if (role === "tutors") return "tutor";
+  return role;
+}
+
+function resolveUserRole(userDoc, fallback = "student") {
+  return normalizeRole(userDoc?.role || userDoc?.selected_role || userDoc?.user_type || userDoc?.userType || userDoc?.signup_entry_role || fallback);
+}
+
+function hasActiveSubscription(userDoc) {
+  if (!userDoc) return false;
+  const status = String(userDoc?.subscription_status || userDoc?.subscriptionStatus || "").toLowerCase().trim();
+  if (ACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  if ((userDoc?.subscription_active === true || userDoc?.subscriptionActive === true) && !INACTIVE_SUBSCRIPTION_STATUSES.has(status)) return true;
+  return false;
+}
+
+function isSubscriptionLockedForRole(userDoc, subscriptionModeEnabled, expectedRole) {
+  if (!subscriptionModeEnabled) return false;
+  const role = resolveUserRole(userDoc, expectedRole);
+  const finalRole = SUBSCRIPTION_REQUIRED_ROLES.has(role) ? role : expectedRole;
+  if (!SUBSCRIPTION_REQUIRED_ROLES.has(finalRole)) return false;
+  return !hasActiveSubscription(userDoc);
+}
+
+function buildSubscriptionCheckoutUrl(userDoc, expectedRole, fallbackPath) {
+  const roleFromDoc = resolveUserRole(userDoc, expectedRole);
+  const role = SUBSCRIPTION_REQUIRED_ROLES.has(roleFromDoc) ? roleFromDoc : expectedRole;
+  const existingPlan = String(userDoc?.subscription_plan || userDoc?.subscriptionPlan || "").trim();
+  const plan = existingPlan || `${role}_monthly`;
+  const query = new URLSearchParams({ type: "subscription", role, plan, lock: "1", returnTo: fallbackPath || window.location.pathname || "/dashboard" });
+  return `${createPageUrl("Checkout")}?${query.toString()}`;
+}
+
 export default function TutorAvailability() {
+  const navigate = useNavigate();
+  const { subscriptionModeEnabled } = useSubscriptionMode();
   const [user, setUser] = useState(null);
   const [tutorData, setTutorData] = useState(null);
   const [availability, setAvailability] = useState({
@@ -110,7 +158,26 @@ export default function TutorAvailability() {
     }
   };
 
+  const subscriptionLocked = useMemo(
+    () => isSubscriptionLockedForRole(user, subscriptionModeEnabled, "tutor"),
+    [user, subscriptionModeEnabled]
+  );
+
+  const subscriptionCheckoutUrl = useMemo(() => {
+    const currentPath = `${window.location.pathname}${window.location.search || ""}`;
+    return buildSubscriptionCheckoutUrl(user, "tutor", currentPath);
+  }, [user]);
+
+  const goToSubscription = () => navigate(subscriptionCheckoutUrl);
+
+  const requireSubscription = () => {
+    if (!subscriptionLocked) return false;
+    setMessage({ type: "error", text: "Availability is locked. Activate your tutor subscription to manage your schedule." });
+    return true;
+  };
+
   const addTimeSlot = () => {
+    if (requireSubscription()) return;
     setAvailability(prev => ({
       ...prev,
       schedule: [
@@ -121,6 +188,7 @@ export default function TutorAvailability() {
   };
 
   const updateTimeSlot = (index, updatedSlot) => {
+    if (subscriptionLocked) return;
     setAvailability(prev => ({
       ...prev,
       schedule: prev.schedule.map((slot, i) => (i === index ? updatedSlot : slot))
@@ -128,6 +196,7 @@ export default function TutorAvailability() {
   };
 
   const deleteTimeSlot = (index) => {
+    if (requireSubscription()) return;
     setAvailability(prev => ({
       ...prev,
       schedule: prev.schedule.filter((_, i) => i !== index)
@@ -135,6 +204,7 @@ export default function TutorAvailability() {
   };
 
   const saveAvailability = async () => {
+    if (requireSubscription()) return;
     try {
       setSaving(true);
 
@@ -197,6 +267,19 @@ export default function TutorAvailability() {
         <p className="text-gray-600 mt-2">Manage your tutoring schedule and time zones</p>
       </div>
 
+      {subscriptionLocked && (
+        <Alert className="mb-6 border-amber-200 bg-amber-50">
+          <Lock className="h-4 w-4" />
+          <AlertDescription className="text-amber-900 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <span>Subscription mode is enabled. Activate your tutor subscription to edit availability.</span>
+            <Button type="button" size="sm" onClick={goToSubscription}>
+              <CreditCard className="h-4 w-4 mr-2" />
+              Go to Payment
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {message && (
         <Alert className={`mb-6 ${message.type === 'error' ? 'border-red-200 bg-red-50' : 'border-green-200 bg-green-50'}`}>
           {message.type === 'error' ? <AlertCircle className="h-4 w-4" /> : <CheckCircle className="h-4 w-4" />}
@@ -243,7 +326,7 @@ export default function TutorAvailability() {
                 <Calendar className="w-5 h-5" />
                 Weekly Schedule
               </CardTitle>
-              <Button onClick={addTimeSlot} size="sm">
+              <Button onClick={addTimeSlot} size="sm" disabled={subscriptionLocked}>
                 <Plus className="w-4 h-4 mr-2" />
                 Add Time Slot
               </Button>

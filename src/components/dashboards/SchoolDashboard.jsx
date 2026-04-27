@@ -1335,7 +1335,7 @@ export default function SchoolDashboard({ user }) {
   const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
   const { subscriptionModeEnabled } = useSubscriptionMode();
 
-  const subscribeUrl = useMemo(() => createPageUrl("Pricing"), []);
+  const subscribeUrl = useMemo(() => createPageUrl("/checkout?type=subscription&role=school&plan=school_monthly"), []);
   const dashboardUrl = useMemo(() => createPageUrl("Dashboard"), []);
   const directoryUrl = useMemo(() => createPageUrl("Directory"), []);
   const [createEventOpen, setCreateEventOpen] = useState(false);
