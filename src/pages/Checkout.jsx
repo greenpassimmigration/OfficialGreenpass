@@ -622,7 +622,7 @@ export default function Checkout() {
       // Navigate to the right place
       switch (pkg.type) {
         case "visa":
-          navigate(createPageUrl("VisaRequests"));
+          navigate(createPageUrl("Dashboard"));
           break;
         case "tutor":
           navigate(createPageUrl("TutorAvailability"));
