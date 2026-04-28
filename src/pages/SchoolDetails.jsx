@@ -610,7 +610,7 @@ export default function SchoolDetails() {
           </p>
           {role === "school" && (
             <div className="mt-5">
-              <Button onClick={() => navigate(createPageUrl("SchoolDashboard"))}>
+              <Button onClick={() => navigate(createPageUrl("Dashboard"))}>
                 Go to School Dashboard
               </Button>
             </div>

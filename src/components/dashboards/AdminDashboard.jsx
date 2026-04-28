@@ -1032,7 +1032,7 @@ export default function AdminDashboard({ user }) {
                 <CardContent className="grid grid-cols-1 gap-3">
                   <Button asChild variant="outline"><Link to={createPageUrl("UserManagement")}>User Management</Link></Button>
                   <Button asChild variant="outline"><Link to={createPageUrl("AdminSchools")}>School Directory</Link></Button>
-                  <Button asChild variant="outline"><Link to={createPageUrl("AdminPackages")}>Subscription Packages</Link></Button>
+                  <Button asChild variant="outline"><Link to={createPageUrl("Subscriptions")}>Subscription Packages</Link></Button>
                   <Button asChild variant="outline"><Link to={createPageUrl("AdminEvents")}>Manage Events</Link></Button>
                   <Button asChild variant="outline"><Link to={createPageUrl("Verification")}>Verifications</Link></Button>
                   <Button asChild variant="outline"><Link to={createPageUrl("AdminPayments")}>Payments & Transactions</Link></Button>

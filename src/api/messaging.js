@@ -113,7 +113,7 @@ export function resolveUserRole(userDoc) {
 export function isSubscriptionActive(userDoc) {
   if (userDoc?.subscription_active === true) return true;
   const s = String(userDoc?.subscription_status || "").toLowerCase().trim();
-  return s === "active" || s === "trialing";
+  return ["active", "trialing", "paid", "subscribed"].includes(s);
 }
 
 export function isSubscriptionInactive(userDoc) {
