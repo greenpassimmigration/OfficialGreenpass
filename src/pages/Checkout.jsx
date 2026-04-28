@@ -54,17 +54,10 @@ function resolveUserRole(userDoc) {
   );
 }
 
-function getReturnPageForRole(role) {
-  switch (normalizeRole(role)) {
-    case "agent":
-      return "AgentDashboard";
-    case "school":
-      return "SchoolDashboard";
-    case "tutor":
-      return "TutorDashboard";
-    default:
-      return "Dashboard";
-  }
+function getReturnPageForRole() {
+  // All role dashboards are rendered by src/pages/Dashboard.jsx.
+  // Do not return AgentDashboard/SchoolDashboard/TutorDashboard because those are not direct routes.
+  return "Dashboard";
 }
 
 function isSubscriptionType(type, mode) {
@@ -484,6 +477,9 @@ export default function Checkout() {
         : "paid";
 
     await updateDoc(userRef, {
+      // Canonical role field used by App.jsx/Dashboard.jsx.
+      role: pkg.role,
+      // Legacy compatibility fields kept temporarily for older pages/helpers.
       selected_role: pkg.role,
       user_type: pkg.role,
       subscription_active: true,
@@ -521,7 +517,7 @@ export default function Checkout() {
       },
     });
 
-    const destination = returnTo || createPageUrl(getReturnPageForRole(pkg.role));
+    const destination = returnTo || createPageUrl(getReturnPageForRole());
     navigate(destination);
   };
 

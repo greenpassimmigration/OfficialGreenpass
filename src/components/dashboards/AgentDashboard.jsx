@@ -124,7 +124,7 @@ function isSubscribedUser(u) {
   if (u.subscription_active === true) return true;
 
   const status = String(u.subscription_status || "").toLowerCase().trim();
-  const ok = new Set(["active", "paid", "trialing"]);
+  const ok = new Set(["active", "paid", "trialing", "subscribed"]);
 
   return ok.has(status);
 }

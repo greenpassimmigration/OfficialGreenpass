@@ -85,7 +85,7 @@ const POST_PREVIEW_TEXT_LIMIT = 320;
 const MAX_DASHBOARD_MEDIA = 4;
 
 const buildPostDetailUrl = (postId) =>
-  `${createPageUrl("PostDetails")}?id=${encodeURIComponent(postId || "")}`;
+  `${createPageUrl("PostDetail")}?id=${encodeURIComponent(postId || "")}`;
 
 const buildCreatorProfileRoute = (post) => {
   const authorId = String(post?.authorId || "").trim();

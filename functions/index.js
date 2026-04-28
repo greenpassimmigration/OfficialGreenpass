@@ -1613,6 +1613,7 @@ function buildSubscriptionUserUpdate({
     : isStripeSubscriptionActive(normalizedStatus, currentPeriodEnd);
 
   const interval = getIntervalFromPlanId(finalPlanId);
+  const roleFromPlan = getRoleFromPlanId(finalPlanId);
 
   const amount =
     subscription?.items?.data?.[0]?.price?.unit_amount
@@ -1635,6 +1636,17 @@ function buildSubscriptionUserUpdate({
     subscription_interval: interval,
     subscription_amount: amount,
     subscription_currency: String(currency || "usd").toUpperCase(),
+
+    ...(roleFromPlan
+      ? {
+          // Canonical field used by App.jsx/Dashboard.jsx.
+          role: roleFromPlan,
+          // Legacy compatibility fields kept temporarily for older pages/helpers.
+          selected_role: roleFromPlan,
+          user_type: roleFromPlan,
+          subscription_role: roleFromPlan,
+        }
+      : {}),
 
     stripe_customer_id: customerId || "",
     stripe_subscription_id: subscriptionId || "",

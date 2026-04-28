@@ -166,7 +166,7 @@ function isSubscribedUser(u) {
   if (u.subscription_active === true) return true;
 
   const status = String(u.subscription_status || "").toLowerCase().trim();
-  const ok = new Set(["active", "paid", "trialing"]);
+  const ok = new Set(["active", "paid", "trialing", "subscribed"]);
   return ok.has(status);
 }
 
@@ -1335,7 +1335,13 @@ export default function SchoolDashboard({ user }) {
   const isSubscribed = useMemo(() => isSubscribedUser(effectiveUser), [effectiveUser]);
   const { subscriptionModeEnabled } = useSubscriptionMode();
 
-  const subscribeUrl = useMemo(() => createPageUrl("/checkout?type=subscription&role=school&plan=school_monthly"), []);
+  const subscribeUrl = useMemo(
+    () =>
+      `${createPageUrl("Checkout")}?type=subscription&role=school&plan=school_monthly&returnTo=${encodeURIComponent(
+        createPageUrl("Dashboard")
+      )}`,
+    []
+  );
   const dashboardUrl = useMemo(() => createPageUrl("Dashboard"), []);
   const directoryUrl = useMemo(() => createPageUrl("Directory"), []);
   const [createEventOpen, setCreateEventOpen] = useState(false);
