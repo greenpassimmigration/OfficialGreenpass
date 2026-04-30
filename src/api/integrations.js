@@ -8,41 +8,66 @@ export async function InvokeLLM(args = {}) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(args),
   });
+
   if (!res.ok) {
     const msg = await res.text();
     throw new Error(`LLM error: ${msg || res.status}`);
   }
+
   return res.json();
 }
 
-
 // ---- Email (enqueue to Firestore 'mail' for Trigger Email extension)
 // Backward-compatible with callers that send { body, text } or { html, text }
-export async function SendEmail({ to, subject, text, html, body, from, replyTo, headers, cc, bcc }) {
+export async function SendEmail({
+  to,
+  subject,
+  text,
+  html,
+  body,
+  from,
+  replyTo,
+  headers,
+  cc,
+  bcc,
+}) {
   if (!to || !subject || (!text && !html && !body)) {
-    throw new Error('SendEmail: "to", "subject", and one of "text" | "html" | "body" are required.');
+    throw new Error(
+      'SendEmail: "to", "subject", and one of "text" | "html" | "body" are required.'
+    );
   }
 
   const { db } = await import('@/firebase');
   const { addDoc, collection, serverTimestamp } = await import('firebase/firestore');
 
-  // Normalize recipients
-  const toList  = Array.isArray(to)  ? to.filter(Boolean)  : [to].filter(Boolean);
-  const ccList  = cc  ? (Array.isArray(cc)  ? cc.filter(Boolean)  : [cc])  : undefined;
+  const toList = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
+  const ccList = cc ? (Array.isArray(cc) ? cc.filter(Boolean) : [cc]) : undefined;
   const bccList = bcc ? (Array.isArray(bcc) ? bcc.filter(Boolean) : [bcc]) : undefined;
 
-  // Prefer env-configured FROM; otherwise use provided `from` if valid; else omit (extension default applies)
-  const ENV_FROM = import.meta.env.VITE_EMAIL_FROM && String(import.meta.env.VITE_EMAIL_FROM).trim();
-  const fromHeader =
-    ENV_FROM ? ENV_FROM :
-    (from && typeof from === 'string' && from.includes('@') ? from : undefined);
+  if (!toList.length) {
+    throw new Error('SendEmail: at least one valid recipient is required.');
+  }
 
-  // Accept `body` as alias for `html`
+  const ENV_FROM =
+    import.meta.env.VITE_EMAIL_FROM &&
+    String(import.meta.env.VITE_EMAIL_FROM).trim();
+
+  // Important:
+  // Prefer caller-provided `from` first.
+  // This allows invoice emails to use the same allowed sender as invitations,
+  // e.g. GreenPass <info@greenpassgroup.com>.
+  // If no caller sender is provided, fall back to VITE_EMAIL_FROM.
+  // If neither exists, omit `from` and let the Firebase Email Extension default apply.
+  const fromHeader =
+    from && typeof from === 'string' && from.includes('@')
+      ? from
+      : ENV_FROM || undefined;
+
   const effectiveHtml = html ?? body ?? undefined;
 
   const payload = {
     to: toList,
-    ...(ccList  ? { cc: ccList }   : {}),
+    ...(ccList ? { cc: ccList } : {}),
     ...(bccList ? { bcc: bccList } : {}),
     ...(fromHeader ? { from: fromHeader } : {}),
     ...(replyTo ? { replyTo } : {}),
@@ -53,12 +78,21 @@ export async function SendEmail({ to, subject, text, html, body, from, replyTo, 
       ...(text ? { text } : {}),
       ...(effectiveHtml ? { html: effectiveHtml } : {}),
     },
-    _meta: { app: 'GreenPass', reason: headers?.['X-GreenPass-Reason'] || 'General' },
+    _meta: {
+      app: 'GreenPass',
+      reason: headers?.['X-GreenPass-Reason'] || 'General',
+    },
   };
 
   const ref = await addDoc(collection(db, 'mail'), payload);
-  // Return a success flag so callers can chain (invoice -> confirmation, mark qr_email_sent, etc.)
-  return { success: true, id: ref.id };
+
+  return {
+    success: true,
+    id: ref.id,
+    queued: true,
+    to: toList,
+    from: fromHeader || 'extension-default',
+  };
 }
 
 /**
@@ -74,27 +108,31 @@ export async function SendEmail({ to, subject, text, html, body, from, replyTo, 
 export async function UploadFile({ file, path, onProgress }) {
   if (!file) throw new Error('UploadFile: "file" is required');
 
-  // Import Firebase only when needed to keep bundles tidy
   const { storage } = await import('@/firebase');
   const { ref, uploadBytesResumable, getDownloadURL } = await import('firebase/storage');
 
-  // Build a clean, organized storage path
   const ext = (file.name?.split('.').pop() || 'bin').toLowerCase();
   const safeName = (file.name || `file.${ext}`).replace(/[^\w.\-]/g, '_');
-  const folder = path || `uploads/${new Date().toISOString().slice(0, 10)}`; // yyyy-mm-dd
+  const folder = path || `uploads/${new Date().toISOString().slice(0, 10)}`;
   const storagePath = `${folder}/${Date.now()}_${safeName}`;
 
   const storageRef = ref(storage, storagePath);
   const metadata = { contentType: file.type || 'application/octet-stream' };
-  const task = uploadBytesResumable(storageRef, file, metadata);
+  const task = uploadBytesResumable(storageRef, metadata ? file : file, metadata);
 
   await new Promise((resolve, reject) => {
     task.on(
       'state_changed',
       (snapshot) => {
         if (onProgress) {
-          const pct = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-          try { onProgress(pct); } catch { /* ignore */ }
+          const pct = Math.round(
+            (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+          );
+          try {
+            onProgress(pct);
+          } catch {
+            // ignore callback errors
+          }
         }
       },
       reject,
@@ -103,11 +141,12 @@ export async function UploadFile({ file, path, onProgress }) {
   });
 
   const file_url = await getDownloadURL(task.snapshot.ref);
+
   return {
     file_url,
     storage_path: storagePath,
     size: task.snapshot.totalBytes,
-    content_type: metadata.contentType
+    content_type: metadata.contentType,
   };
 }
 
