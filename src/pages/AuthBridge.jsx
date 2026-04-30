@@ -15,7 +15,17 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "@/firebase";
 
-function normalizeRole(value) {
+const VALID_ROLES = [
+  "admin",
+  "user",
+  "agent",
+  "tutor",
+  "school",
+  "vendor",
+  "collaborator",
+];
+
+function normalizeRole(value, fallback = "user") {
   const role = String(value || "").trim().toLowerCase();
 
   // GreenPass role standard:
@@ -25,11 +35,11 @@ function normalizeRole(value) {
   if (role === "institution") return "school";
   if (role === "provider") return "vendor";
 
-  if (["user", "agent", "tutor", "school", "vendor", "collaborator"].includes(role)) {
+  if (VALID_ROLES.includes(role)) {
     return role;
   }
 
-  return "user";
+  return fallback;
 }
 
 async function resolveCollaboratorRef(refCode) {
@@ -106,6 +116,7 @@ function readStoredReferralContext() {
   if (typeof window === "undefined") return {};
 
   let raw = "";
+
   try {
     raw = window.sessionStorage.getItem(PENDING_REFERRAL_STORAGE_KEY) || "";
   } catch {}
@@ -134,6 +145,7 @@ function readStoredReferralContext() {
 
 function buildReferralContextFromSearch(search) {
   if (!search) return {};
+
   return {
     ref: cleanToken(search.get("ref")),
     student_ref: cleanToken(search.get("student_ref")),
@@ -145,6 +157,7 @@ function buildReferralContextFromSearch(search) {
 
 function getMergedReferralContext(current = {}) {
   const stored = readStoredReferralContext();
+
   const merged = {
     ref: cleanToken(current?.ref) || cleanToken(stored?.ref),
     student_ref: cleanToken(current?.student_ref) || cleanToken(stored?.student_ref),
@@ -162,12 +175,15 @@ function getMergedReferralContext(current = {}) {
 
 function clearStoredReferralContext() {
   if (typeof window === "undefined") return;
+
   try {
     window.sessionStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
   } catch {}
+
   try {
     window.localStorage.removeItem(PENDING_REFERRAL_STORAGE_KEY);
   } catch {}
+
   try {
     window.localStorage.removeItem("gp_collaborator_ref");
     window.localStorage.removeItem("gp_agent_ref");
@@ -186,9 +202,6 @@ export default function AuthBridge() {
   const lang = params.get("lang") || "en";
   const nextHint = params.get("next") || "";
   const collaboratorRef = String(params.get("ref") || "").trim();
-  const studentRef = String(params.get("student_ref") || "").trim();
-  const agentRef = String(params.get("agent_ref") || "").trim();
-  const tutorRef = String(params.get("tutor_ref") || "").trim();
 
   const [status, setStatus] = React.useState("…");
 
@@ -204,10 +217,12 @@ export default function AuthBridge() {
   const appendQuery = (path, queryObj) => {
     try {
       const u = new URL(path, window.location.origin);
+
       Object.entries(queryObj || {}).forEach(([k, v]) => {
         if (v === undefined || v === null || v === "") return;
         u.searchParams.set(k, String(v));
       });
+
       return u.pathname + (u.search ? u.search : "");
     } catch {
       return path;
@@ -222,13 +237,16 @@ export default function AuthBridge() {
     try {
       localStorage.setItem("i18nextLng", lang);
       localStorage.setItem("gp_lang", lang);
+
       const currentReferral = buildReferralContextFromSearch(params);
+
       if (hasReferralContext(currentReferral)) {
         persistReferralContext(currentReferral);
       } else {
         getMergedReferralContext(currentReferral);
       }
     } catch {}
+
     if (i18n?.language !== lang) {
       i18n.changeLanguage(lang).catch(() => {});
     }
@@ -243,7 +261,9 @@ export default function AuthBridge() {
 
         if (!code) {
           setStatus(t("authBridge.status_missing_code", "Missing sign-in code."));
-          navigate(`/login?mode=login&lang=${encodeURIComponent(lang)}`, { replace: true });
+          navigate(`/login?mode=login&lang=${encodeURIComponent(lang)}`, {
+            replace: true,
+          });
           return;
         }
 
@@ -260,15 +280,24 @@ export default function AuthBridge() {
 
         const data = await res.json().catch(() => ({}));
         const customToken = data?.customToken || data?.token;
-        if (!customToken) throw new Error("No customToken returned from exchangeAuthBridgeCode.");
+
+        if (!customToken) {
+          throw new Error("No customToken returned from exchangeAuthBridgeCode.");
+        }
+
         if (cancelled) return;
 
         setStatus(t("authBridge.status_signing_in", "Signing you in…"));
+
         await signInWithCustomToken(auth, customToken);
+
         if (cancelled) return;
 
         const fbUser = auth.currentUser;
-        if (!fbUser?.uid) throw new Error("Signed in but auth.currentUser is missing.");
+
+        if (!fbUser?.uid) {
+          throw new Error("Signed in but auth.currentUser is missing.");
+        }
 
         setStatus(t("authBridge.status_checking_profile", "Checking your profile…"));
 
@@ -284,17 +313,20 @@ export default function AuthBridge() {
         const storedAgentRef = cleanToken(mergedReferral.agent_ref);
         const storedTutorRef = cleanToken(mergedReferral.tutor_ref);
         const storedRole = cleanToken(mergedReferral.role);
+
         const effectiveRole = storedRole || role || "";
 
         const referredByCollaboratorUid = await resolveCollaboratorRef(storedRef);
 
         const hint = safeInternalPath(nextHint);
-        const isHintMeaningful = !!(hint && hint !== "/onboarding" && hint !== "/dashboard");
+        const isHintMeaningful = Boolean(
+          hint && hint !== "/onboarding" && hint !== "/dashboard"
+        );
 
         let goTo = "/dashboard";
 
         if (!snap.exists()) {
-          const normalizedRole = normalizeRole(effectiveRole);
+          const normalizedRole = normalizeRole(effectiveRole, "user");
 
           await setDoc(
             userRef,
@@ -316,31 +348,38 @@ export default function AuthBridge() {
 
           goTo = isHintMeaningful
             ? appendQuery("/onboarding", {
-              next: hint,
-              lang,
-              role: effectiveRole || undefined,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            })
+                next: hint,
+                lang,
+                role: effectiveRole || undefined,
+                ref: storedRef || undefined,
+                student_ref: storedStudentRef || undefined,
+                agent_ref: storedAgentRef || undefined,
+                tutor_ref: storedTutorRef || undefined,
+              })
             : appendQuery("/onboarding", {
-              lang,
-              role: effectiveRole || undefined,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            });
+                lang,
+                role: effectiveRole || undefined,
+                ref: storedRef || undefined,
+                student_ref: storedStudentRef || undefined,
+                agent_ref: storedAgentRef || undefined,
+                tutor_ref: storedTutorRef || undefined,
+              });
         } else {
           const u = snap.data() || {};
           const completed = u.onboarding_completed === true;
 
-          const normalizedRole = normalizeRole(effectiveRole || u.role || "");
+          const existingRole = normalizeRole(u.role || "", "");
+          const requestedRole = normalizeRole(effectiveRole || "", "");
+
+          // Important:
+          // Existing admin accounts must never be downgraded by bridge/referral/login hints.
+          const normalizedRole =
+            existingRole === "admin"
+              ? "admin"
+              : requestedRole || existingRole || "user";
 
           // Keep existing users clean in the role-only model.
-          // We only write role + signup_entry_role. Old aliases like user_type,
-          // userType, and selected_role are no longer written by this bridge.
+          // Do not write old aliases here: user_type, userType, selected_role.
           if (normalizedRole && u.role !== normalizedRole) {
             await setDoc(
               userRef,
@@ -370,50 +409,59 @@ export default function AuthBridge() {
           if (!completed) {
             goTo = isHintMeaningful
               ? appendQuery("/onboarding", {
-              next: hint,
-              lang,
-              role: effectiveRole || undefined,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            })
+                  next: hint,
+                  lang,
+                  role: effectiveRole || undefined,
+                  ref: storedRef || undefined,
+                  student_ref: storedStudentRef || undefined,
+                  agent_ref: storedAgentRef || undefined,
+                  tutor_ref: storedTutorRef || undefined,
+                })
               : appendQuery("/onboarding", {
-              lang,
-              role: effectiveRole || undefined,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            });
+                  lang,
+                  role: effectiveRole || undefined,
+                  ref: storedRef || undefined,
+                  student_ref: storedStudentRef || undefined,
+                  agent_ref: storedAgentRef || undefined,
+                  tutor_ref: storedTutorRef || undefined,
+                });
           } else {
             goTo = hint
               ? appendQuery(hint, {
-              lang,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            })
+                  lang,
+                  ref: storedRef || undefined,
+                  student_ref: storedStudentRef || undefined,
+                  agent_ref: storedAgentRef || undefined,
+                  tutor_ref: storedTutorRef || undefined,
+                })
               : appendQuery("/dashboard", {
-              lang,
-              ref: storedRef || undefined,
-              student_ref: storedStudentRef || undefined,
-              agent_ref: storedAgentRef || undefined,
-              tutor_ref: storedTutorRef || undefined,
-            });
+                  lang,
+                  ref: storedRef || undefined,
+                  student_ref: storedStudentRef || undefined,
+                  agent_ref: storedAgentRef || undefined,
+                  tutor_ref: storedTutorRef || undefined,
+                });
           }
         }
 
         if (cancelled) return;
 
+        clearStoredReferralContext();
+
         setStatus(t("authBridge.status_redirecting", "Redirecting…"));
         window.location.replace(goTo);
       } catch (err) {
         console.error("[AuthBridge] error:", err);
+
         if (cancelled) return;
 
-        setStatus(t("authBridge.status_failed_redirecting", "Sign-in failed. Redirecting to login…"));
+        setStatus(
+          t(
+            "authBridge.status_failed_redirecting",
+            "Sign-in failed. Redirecting to login…"
+          )
+        );
+
         setTimeout(() => {
           const fallbackParams = new URLSearchParams();
           fallbackParams.set("mode", "login");
@@ -424,11 +472,25 @@ export default function AuthBridge() {
             buildReferralContextFromSearch(params)
           );
 
-          if (cleanToken(mergedReferral.ref)) fallbackParams.set("ref", cleanToken(mergedReferral.ref));
-          if (cleanToken(mergedReferral.student_ref)) fallbackParams.set("student_ref", cleanToken(mergedReferral.student_ref));
-          if (cleanToken(mergedReferral.agent_ref)) fallbackParams.set("agent_ref", cleanToken(mergedReferral.agent_ref));
-          if (cleanToken(mergedReferral.tutor_ref)) fallbackParams.set("tutor_ref", cleanToken(mergedReferral.tutor_ref));
-          if (cleanToken(mergedReferral.role)) fallbackParams.set("role", cleanToken(mergedReferral.role));
+          if (cleanToken(mergedReferral.ref)) {
+            fallbackParams.set("ref", cleanToken(mergedReferral.ref));
+          }
+
+          if (cleanToken(mergedReferral.student_ref)) {
+            fallbackParams.set("student_ref", cleanToken(mergedReferral.student_ref));
+          }
+
+          if (cleanToken(mergedReferral.agent_ref)) {
+            fallbackParams.set("agent_ref", cleanToken(mergedReferral.agent_ref));
+          }
+
+          if (cleanToken(mergedReferral.tutor_ref)) {
+            fallbackParams.set("tutor_ref", cleanToken(mergedReferral.tutor_ref));
+          }
+
+          if (cleanToken(mergedReferral.role)) {
+            fallbackParams.set("role", cleanToken(mergedReferral.role));
+          }
 
           navigate(`/login?${fallbackParams.toString()}`, {
             replace: true,
@@ -456,8 +518,14 @@ export default function AuthBridge() {
         gap: 12,
       }}
     >
-      <div className="gp-spinner" aria-label={t("authBridge.aria_loading", "Loading")} />
-      <div style={{ fontSize: 14, color: "#555", textAlign: "center" }}>{status}</div>
+      <div
+        className="gp-spinner"
+        aria-label={t("authBridge.aria_loading", "Loading")}
+      />
+
+      <div style={{ fontSize: 14, color: "#555", textAlign: "center" }}>
+        {status}
+      </div>
 
       <style>{`
         .gp-spinner {
@@ -468,8 +536,11 @@ export default function AuthBridge() {
           border-top-color: rgba(0, 0, 0, 0.55);
           animation: gp-spin 0.9s linear infinite;
         }
+
         @keyframes gp-spin {
-          to { transform: rotate(360deg); }
+          to {
+            transform: rotate(360deg);
+          }
         }
       `}</style>
     </div>
