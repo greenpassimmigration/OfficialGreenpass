@@ -68,53 +68,7 @@ function formatInvoiceMoney(value) {
   }
 }
 
-function renderItemRows(items = []) {
-  const safeItems =
-    Array.isArray(items) && items.length
-      ? items
-      : [{ description: 'Service fee', quantity: 1, unitPrice: 0 }];
-
-  return safeItems
-    .map((item, index) => {
-      const qty = numberOrZero(item.quantity);
-      const unitPrice = numberOrZero(item.unitPrice);
-      const lineTotal = qty * unitPrice;
-
-      return `
-        <tr class="${index % 2 === 1 ? 'alt-row' : ''}">
-          <td class="item-no">${index + 1}</td>
-          <td class="item-description">${block(item.description || '—')}</td>
-          <td class="item-qty">${qty || ''}</td>
-          <td class="item-money">${esc(formatInvoiceMoney(unitPrice))}</td>
-          <td class="item-money">${esc(formatInvoiceMoney(lineTotal))}</td>
-        </tr>
-      `;
-    })
-    .join('');
-}
-
-function renderTerms(invoice = {}) {
-  const terms = Array.isArray(invoice.terms) ? invoice.terms.filter(Boolean) : [];
-
-  if (terms.length) {
-    return terms.map((term) => esc(term)).join(' ');
-  }
-
-  return 'No guarantee of visa. Payments are non-refundable unless stated. Services depend on complete and accurate client information. GreenPass is not responsible for government or third-party decisions.';
-}
-
-function renderPaymentText(invoice = {}, bank = {}, businessName = 'GREENPASS IMMIGRATION') {
-  const paymentText =
-    invoice?.paymentInstructions ||
-    bank?.instructions ||
-    buildPaymentInstructions(bank, businessName);
-
-  return plainLines(paymentText)
-    .map((line) => `<div>${esc(line)}</div>`)
-    .join('');
-}
-
-export function renderInvoiceHtml(invoice = {}) {
+function getInvoiceViewData(invoice = {}) {
   const currency = invoice.currency || 'CAD';
 
   const totals = calcInvoiceTotals(
@@ -160,9 +114,106 @@ export function renderInvoiceHtml(invoice = {}) {
   const issueDate = formatDateValue(invoice.issueDate) || '—';
   const customerName = invoice.customerName || '—';
 
-  const itemRows = renderItemRows(invoice.items || []);
-  const paymentHtml = renderPaymentText(invoice, bank, businessName);
-  const termsText = renderTerms(invoice);
+  const safeItems =
+    Array.isArray(invoice.items) && invoice.items.length
+      ? invoice.items
+      : [{ description: 'Service Fee', quantity: 1, unitPrice: 0 }];
+
+  const terms = Array.isArray(invoice.terms)
+    ? invoice.terms.filter(Boolean)
+    : [];
+
+  const termsText = terms.length
+    ? terms.map((term) => String(term || '').trim()).filter(Boolean).join(' ')
+    : 'No guarantee of visa. Payments are non-refundable unless stated. Services depend on complete and accurate client information. GreenPass is not responsible for government or third-party decisions.';
+
+  const paymentText =
+    invoice?.paymentInstructions ||
+    bank?.instructions ||
+    buildPaymentInstructions(bank, businessName);
+
+  return {
+    currency,
+    totals,
+    sender,
+    bank,
+    businessName,
+    businessNumber,
+    website,
+    senderPhone,
+    senderEmail,
+    senderAddress,
+    invoiceNumber,
+    issueDate,
+    customerName,
+    safeItems,
+    termsText,
+    paymentText,
+  };
+}
+
+function renderPrintItemRows(items = []) {
+  return items
+    .map((item, index) => {
+      const qty = numberOrZero(item.quantity);
+      const unitPrice = numberOrZero(item.unitPrice);
+      const lineTotal = qty * unitPrice;
+
+      return `
+        <tr class="${index % 2 === 1 ? 'alt-row' : ''}">
+          <td class="item-no">${index + 1}</td>
+          <td class="item-description">${block(item.description || '—')}</td>
+          <td class="item-qty">${qty || ''}</td>
+          <td class="item-money">${esc(formatInvoiceMoney(unitPrice))}</td>
+          <td class="item-money">${esc(formatInvoiceMoney(lineTotal))}</td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+function renderEmailItemRows(items = []) {
+  return items
+    .map((item, index) => {
+      const qty = numberOrZero(item.quantity);
+      const unitPrice = numberOrZero(item.unitPrice);
+      const lineTotal = qty * unitPrice;
+
+      return `
+        <tr style="background:${index % 2 === 1 ? LIGHT_BLUE : '#ffffff'};">
+          <td style="padding:8px 10px; text-align:center; border:0;">${index + 1}</td>
+          <td style="padding:8px 10px; border:0;">${block(item.description || '—')}</td>
+          <td style="padding:8px 10px; text-align:center; border:0;">${qty || ''}</td>
+          <td style="padding:8px 10px; text-align:right; border:0;">${esc(formatInvoiceMoney(unitPrice))}</td>
+          <td style="padding:8px 10px; text-align:right; border:0;">${esc(formatInvoiceMoney(lineTotal))}</td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+export function renderInvoiceHtml(invoice = {}) {
+  const {
+    currency,
+    totals,
+    businessNumber,
+    website,
+    senderPhone,
+    senderEmail,
+    senderAddress,
+    invoiceNumber,
+    issueDate,
+    customerName,
+    safeItems,
+    termsText,
+    paymentText,
+  } = getInvoiceViewData(invoice);
+
+  const itemRows = renderPrintItemRows(safeItems);
+  const paymentHtml = plainLines(paymentText)
+    .map((line) => `<div>${esc(line)}</div>`)
+    .join('');
+
   const showBalance = numberOrZero(totals.paid) > 0;
 
   return `<!doctype html>
@@ -184,6 +235,7 @@ export function renderInvoiceHtml(invoice = {}) {
 
       .page {
         width: 900px;
+        min-width: 900px;
         min-height: 1160px;
         margin: 24px auto;
         background: #ffffff;
@@ -201,13 +253,27 @@ export function renderInvoiceHtml(invoice = {}) {
       .brand {
         display: flex;
         align-items: center;
+        gap: 12px;
       }
 
       .brand-logo {
-        width: 235px;
-        height: auto;
+        width: 58px;
+        height: 58px;
         object-fit: contain;
         display: block;
+      }
+
+      .brand-title {
+        font-size: 27px;
+        font-weight: 900;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+
+      .brand-subtitle {
+        margin-top: 6px;
+        font-size: 16px;
+        letter-spacing: 0.03em;
       }
 
       .invoice-title {
@@ -474,6 +540,7 @@ export function renderInvoiceHtml(invoice = {}) {
         display: flex;
         align-items: flex-start;
         gap: 8px;
+        min-width: 0;
       }
 
       .footer-icon {
@@ -486,11 +553,15 @@ export function renderInvoiceHtml(invoice = {}) {
 
       .footer-text {
         line-height: 32px;
+        word-break: break-word;
+        min-width: 0;
       }
 
       .footer-text.multiline {
         line-height: 1.25;
         padding-top: 2px;
+        word-break: break-word;
+        min-width: 0;
       }
 
       @page {
@@ -504,9 +575,10 @@ export function renderInvoiceHtml(invoice = {}) {
         }
 
         .page {
-          width: 100%;
+          width: 900px;
+          min-width: 900px;
           min-height: auto;
-          margin: 0;
+          margin: 0 auto;
           box-shadow: none;
           padding: 58px 60px 44px;
         }
@@ -518,11 +590,11 @@ export function renderInvoiceHtml(invoice = {}) {
     <div class="page">
       <div class="top">
         <div class="brand">
-          <img
-            class="brand-logo"
-            src="${esc(GREENPASS_LOGO_URL)}"
-            alt="GreenPass Study Abroad App"
-          />
+          <img class="brand-logo" src="${esc(GREENPASS_LOGO_URL)}" alt="GreenPass" />
+          <div>
+            <div class="brand-title">GREENPASS</div>
+            <div class="brand-subtitle">STUDY ABROAD APP</div>
+          </div>
         </div>
 
         <div class="invoice-title">INVOICE</div>
@@ -634,6 +706,198 @@ export function renderInvoiceHtml(invoice = {}) {
         </div>
       </div>
     </div>
+  </body>
+</html>`;
+}
+
+export function renderInvoiceEmailHtml(invoice = {}) {
+  const {
+    currency,
+    totals,
+    businessNumber,
+    website,
+    senderPhone,
+    senderEmail,
+    senderAddress,
+    invoiceNumber,
+    issueDate,
+    customerName,
+    safeItems,
+    termsText,
+    paymentText,
+  } = getInvoiceViewData(invoice);
+
+  const itemRows = renderEmailItemRows(safeItems);
+  const paymentHtml = plainLines(paymentText)
+    .map((line) => `<div>${esc(line)}</div>`)
+    .join('');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Invoice ${esc(invoiceNumber)}</title>
+  </head>
+
+  <body style="margin:0; padding:0; background:#ffffff; color:${TEXT}; font-family:Arial, Helvetica, sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%; background:#ffffff;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:760px; max-width:760px; background:#ffffff; color:${TEXT}; font-family:Arial, Helvetica, sans-serif;">
+            <tr>
+              <td>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                  <tr>
+                    <td align="left" valign="top" style="width:50%;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                        <tr>
+                          <td valign="middle" style="padding-right:10px;">
+                            <img src="${esc(GREENPASS_LOGO_URL)}" alt="GreenPass" width="58" height="58" style="display:block; width:58px; height:58px; object-fit:contain;" />
+                          </td>
+                          <td valign="middle">
+                            <div style="font-size:27px; font-weight:900; line-height:1; letter-spacing:-0.02em; color:${TEXT};">GREENPASS</div>
+                            <div style="font-size:16px; margin-top:6px; letter-spacing:0.03em; color:${TEXT};">STUDY ABROAD APP</div>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+
+                    <td align="right" valign="top" style="width:50%;">
+                      <div style="color:${BLUE}; font-size:50px; font-weight:900; letter-spacing:0.13em; line-height:1;">INVOICE</div>
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:28px;">
+                  <tr>
+                    <td style="width:72px;">
+                      <div style="height:6px; background:${SKY_BLUE}; border-radius:999px; line-height:6px;">&nbsp;</div>
+                    </td>
+                    <td>
+                      <div style="height:3px; background:${BLUE}; line-height:3px;">&nbsp;</div>
+                    </td>
+                    <td style="width:190px; padding-left:8px; white-space:nowrap; font-size:16px; letter-spacing:0.03em; color:${TEXT};">
+                      ${esc(website)}
+                    </td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:24px; font-size:18px; line-height:1.45; color:${TEXT};">
+                  <div>Business Number</div>
+                  <div>${esc(businessNumber)}</div>
+                </div>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:82px;">
+                  <tr>
+                    <td valign="top" align="left" style="width:50%;">
+                      <div style="font-size:18px;">Invoice to :</div>
+                      <div style="margin-top:28px; font-size:27px; font-weight:900; letter-spacing:0.04em; text-transform:uppercase;">
+                        ${esc(customerName)}
+                      </div>
+                    </td>
+
+                    <td valign="top" align="right" style="width:50%; padding-top:8px;">
+                      <div style="font-size:20px; font-weight:800;">Invoice no : ${esc(invoiceNumber)}</div>
+                      <div style="margin-top:32px; font-size:20px;">${esc(issueDate)}</div>
+                    </td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:64px; border:5px solid ${BLUE}; min-height:260px;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse; width:100%; font-size:16px;">
+                    <thead>
+                      <tr style="background:${BLUE}; color:#ffffff;">
+                        <th align="left" style="padding:8px 10px; width:60px; font-size:16px; font-weight:900;">NO</th>
+                        <th align="left" style="padding:8px 10px; font-size:16px; font-weight:900;">DESCRIPTION</th>
+                        <th align="center" style="padding:8px 10px; width:100px; font-size:16px; font-weight:900;">QTY</th>
+                        <th align="right" style="padding:8px 10px; width:150px; font-size:16px; font-weight:900;">PRICE</th>
+                        <th align="right" style="padding:8px 10px; width:150px; font-size:16px; font-weight:900;">TOTAL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${itemRows}
+                    </tbody>
+                  </table>
+                </div>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:30px;">
+                  <tr>
+                    <td align="right">
+                      <table role="presentation" width="430" cellspacing="0" cellpadding="0" border="0" style="width:430px; background:${BLUE}; color:#ffffff;">
+                        <tr>
+                          <td align="right" style="padding:9px 20px; font-size:18px; font-weight:900;">
+                            TOTAL ${esc(currency)} :
+                          </td>
+                          <td align="right" style="padding:9px 12px; min-width:130px; font-size:18px; font-weight:900;">
+                            ${esc(formatInvoiceMoney(totals.total))}
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:18px;">
+                  <div style="display:inline-block; background:${BLUE}; color:#ffffff; font-size:17px; font-weight:900; letter-spacing:0.04em; padding:8px 14px;">
+                    PAYMENT METHOD :
+                  </div>
+
+                  <div style="margin-top:14px; font-size:16px; line-height:1.45; color:${TEXT};">
+                    ${paymentHtml}
+                  </div>
+
+                  <div style="margin-top:20px; width:350px; height:3px; background:${BLUE}; line-height:3px;">&nbsp;</div>
+
+                  <div style="margin-top:14px; font-size:16px; color:${TEXT};">
+                    Interac e-Transfer (Canada only) Email: ${esc(senderEmail)}
+                  </div>
+
+                  <div style="margin-top:20px; width:350px; height:3px; background:${BLUE}; line-height:3px;">&nbsp;</div>
+                </div>
+
+                <div style="margin-top:14px;">
+                  <div style="font-size:18px; font-weight:900; color:${TEXT};">Term and Conditions :</div>
+                  <div style="margin-top:10px; font-size:15px; line-height:1.45; color:#5f6368;">
+                    ${esc(termsText)}
+                  </div>
+                </div>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:38px;">
+                  <tr>
+                    <td style="width:72px;">
+                      <div style="height:6px; background:${SKY_BLUE}; border-radius:999px; line-height:6px;">&nbsp;</div>
+                    </td>
+                    <td>
+                      <div style="height:3px; background:${BLUE}; line-height:3px;">&nbsp;</div>
+                    </td>
+                    <td style="width:72px;">
+                      <div style="height:6px; background:${SKY_BLUE}; border-radius:999px; line-height:6px;">&nbsp;</div>
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:24px; font-size:16px; color:${TEXT};">
+                  <tr>
+                    <td valign="top" style="width:33%; padding-right:12px;">
+                      <span style="color:${SKY_BLUE}; font-size:28px;">☎</span>
+                      <span>${esc(senderPhone)}</span>
+                    </td>
+                    <td valign="top" style="width:34%; padding-right:12px;">
+                      <span style="color:${SKY_BLUE}; font-size:28px;">✉</span>
+                      <span>${esc(senderEmail)}</span>
+                    </td>
+                    <td valign="top" style="width:33%;">
+                      <span style="color:${SKY_BLUE}; font-size:28px;">⌖</span>
+                      <span>${block(senderAddress)}</span>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   </body>
 </html>`;
 }

@@ -35,7 +35,10 @@ import {
 } from 'lucide-react';
 import InvoiceForm from '@/components/invoice/InvoiceForm';
 import InvoicePreview from '@/components/invoice/InvoicePreview';
-import { renderInvoiceHtml, openInvoicePrintWindow } from '@/lib/invoicePdf';
+import {
+  renderInvoiceEmailHtml,
+  openInvoicePrintWindow,
+} from '@/lib/invoicePdf';
 import {
   calcInvoiceTotals,
   createBlankInvoice,
@@ -302,7 +305,7 @@ export default function InternalInvoices() {
         from: INVOICE_FROM_HEADER,
         replyTo: INVOICE_FROM_EMAIL,
         subject: `Invoice ${prepared.invoiceNumber}`,
-        html: renderInvoiceHtml(prepared),
+        html: renderInvoiceEmailHtml(prepared),
         text: `Invoice ${prepared.invoiceNumber} for ${
           prepared.customerName || 'client'
         }`,

@@ -64,7 +64,7 @@ export default function InvoicePreview({ invoice }) {
   const items =
     Array.isArray(safeInvoice?.items) && safeInvoice.items.length
       ? safeInvoice.items
-      : [{ description: 'Service fee', quantity: 1, unitPrice: 0 }];
+      : [{ description: 'Service Fee', quantity: 1, unitPrice: 0 }];
 
   const terms = Array.isArray(safeInvoice?.terms)
     ? safeInvoice.terms.filter(Boolean)
@@ -81,7 +81,7 @@ export default function InvoicePreview({ invoice }) {
 
   return (
     <Card className="rounded-3xl shadow-sm border-slate-200 overflow-hidden bg-slate-100">
-      <CardContent className="p-4 md:p-8">
+      <CardContent className="p-4 md:p-8 overflow-x-auto">
         <div
           className="mx-auto bg-white text-[#252525] shadow-sm"
           style={invoicePageStyle}
@@ -118,17 +118,39 @@ function Header({ website, businessNumber }) {
   return (
     <div>
       <div className="flex items-start justify-between gap-8">
-        <div className="flex items-center">
+        <div className="flex items-center gap-3">
           <img
             src={GREENPASS_LOGO_URL}
-            alt="GreenPass Study Abroad App"
+            alt="GreenPass"
             style={{
-              width: 235,
-              height: 'auto',
+              width: 58,
+              height: 58,
               objectFit: 'contain',
               display: 'block',
             }}
           />
+
+          <div>
+            <div
+              style={{
+                fontSize: 27,
+                fontWeight: 900,
+                lineHeight: 1,
+                letterSpacing: '-0.02em',
+              }}
+            >
+              GREENPASS
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 16,
+                letterSpacing: '0.03em',
+              }}
+            >
+              STUDY ABROAD APP
+            </div>
+          </div>
         </div>
 
         <div className="text-right">
@@ -342,7 +364,7 @@ function Footer({ phone, email, address }) {
 
 function FooterItem({ icon, text, multiline = false }) {
   return (
-    <div className="flex items-start gap-2">
+    <div className="flex items-start gap-2 min-w-0">
       <div
         style={{
           color: SKY_BLUE,
@@ -356,7 +378,9 @@ function FooterItem({ icon, text, multiline = false }) {
       </div>
       <div
         className={
-          multiline ? 'whitespace-pre-line leading-snug' : 'leading-[32px]'
+          multiline
+            ? 'whitespace-pre-line leading-snug break-words min-w-0'
+            : 'leading-[32px] break-words min-w-0'
         }
       >
         {text || '—'}
@@ -427,8 +451,8 @@ function formatInvoiceMoney(value) {
 }
 
 const invoicePageStyle = {
-  width: '100%',
-  maxWidth: 900,
+  width: 900,
+  minWidth: 900,
   minHeight: 1160,
   padding: '58px 60px 44px',
   fontFamily:
